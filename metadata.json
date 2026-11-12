@@ -1,6 +1,6 @@
 {
-  "name": "DevTool & GitHub Sync",
-  "description": "Build custom mini-tools and automatically sync or push project code to your GitHub repository.",
+  "name": "workbuddyTool",
+  "description": "WorkBuddy 账号日常工具：多账号管理、自动一键完成日常任务、猫猫旅行、积分领取，支持浏览器访问与 Electron 桌面打包。",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

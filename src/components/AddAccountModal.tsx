@@ -159,7 +159,7 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
             <label className="text-slate-300 font-medium block mb-1 flex items-center justify-between">
               <span className="flex items-center gap-1">
                 <Key className="w-3.5 h-3.5 text-emerald-400" />
-                <span>授权认证方式</span>
+                <span>授权认证凭据 (Cookie 或 Token) *</span>
               </span>
               <div className="flex items-center gap-2">
                 <label className="inline-flex items-center gap-1 cursor-pointer">
@@ -189,12 +189,15 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
               onChange={(e) => setCredentials(e.target.value)}
               placeholder={
                 authType === 'cookie'
-                  ? '在此粘贴浏览器获取的 WorkBuddy 登录 Cookie 字符串 (如 wb_token=...)'
-                  : '在此输入 JWT 或 Bearer Token'
+                  ? '在 workbuddy.cn 浏览器控制台(F12) -> 网络 -> 复制请求头中的 Cookie 字符串粘贴至此'
+                  : '在 workbuddy.cn 浏览器控制台(F12) -> 复制 Authorization: Bearer 后面的 Token'
               }
               rows={3}
               className="w-full bg-slate-950 border border-slate-700/80 rounded-xl p-3 text-xs font-mono text-slate-200 focus:outline-none focus:border-emerald-500 resize-none"
             />
+            <div className="mt-1 text-[11px] text-slate-400 leading-relaxed">
+              💡 <strong>如何获取真实凭据</strong>：在电脑浏览器打开 <a href="https://www.workbuddy.cn/profile/growth-center" target="_blank" rel="noreferrer" className="text-emerald-400 underline">workbuddy.cn</a>，按 F12 打开开发者工具 &rarr; 切换到「网络 (Network)」&rarr; 刷新页面 &rarr; 点击任意接口 &rarr; 复制「请求标头 (Request Headers)」里的 <code className="text-amber-300">Cookie</code> 或 <code className="text-amber-300">Authorization</code>。
+            </div>
           </div>
 
           <div>

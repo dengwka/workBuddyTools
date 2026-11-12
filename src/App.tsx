@@ -44,7 +44,7 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <span className="font-bold text-slate-100 text-sm tracking-tight">WorkBuddy 账号日常工具</span>
                 <span className="text-[10px] font-mono px-1.5 py-0.2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded">
-                  v0.5.9
+                  v1.0.0
                 </span>
                 <span className="text-[10px] text-slate-500 hidden sm:inline">
                   (workbuddyTools)
@@ -164,7 +164,7 @@ export default function App() {
       {/* Footer */}
       <footer className="border-t border-slate-900 bg-slate-950 py-4 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>WorkBuddy 账号日常工具 v0.5.9 • workbuddyTools</span>
+          <span>WorkBuddy 账号日常工具 v1.0.0 • workbuddyTools</span>
           <div className="flex items-center gap-4">
             <button
               onClick={() => setIsPackagingGuideOpen(true)}

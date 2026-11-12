@@ -8,11 +8,12 @@ export const CURRENT_PROJECT_FILES: ProjectFile[] = [
     content: `{
   "name": "workbuddy-tools",
   "private": true,
-  "version": "0.5.9",
+  "version": "1.0.0",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev": "tsx server.ts",
+    "start": "tsx server.ts",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
@@ -23,6 +24,7 @@ export const CURRENT_PROJECT_FILES: ProjectFile[] = [
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^6.1.1",
+    "express": "^4.21.2",
     "jszip": "^3.10.2",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
@@ -32,12 +34,144 @@ export const CURRENT_PROJECT_FILES: ProjectFile[] = [
     "vite": "^8.3.0"
   },
   "devDependencies": {
+    "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "tsx": "^4.21.0",
     "typescript": "^7.0.2"
   }
 }`,
+  },
+  {
+    path: 'server.ts',
+    language: 'typescript',
+    content: `import express, { Request, Response } from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+async function startServer() {
+  const app = express();
+  const PORT = process.env.PORT || 3000;
+
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+  // API Proxy Route for WorkBuddy to bypass browser CORS
+  app.post('/api/workbuddy/proxy', async (req: Request, res: Response) => {
+    try {
+      const { url, method = 'GET', headers = {}, body } = req.body;
+
+      if (!url || !url.startsWith('https://www.workbuddy.cn')) {
+        return res.status(400).json({ error: 'Invalid or disallowed WorkBuddy URL' });
+      }
+
+      const requestHeaders: Record<string, string> = {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 WorkBuddy/1.0.0',
+        Accept: 'application/json, text/plain, */*',
+        'Content-Type': 'application/json',
+        'X-Client-Platform': 'web',
+        ...headers,
+      };
+
+      const fetchOptions: RequestInit = {
+        method,
+        headers: requestHeaders,
+      };
+
+      if (body && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
+        fetchOptions.body = typeof body === 'string' ? body : JSON.stringify(body);
+      }
+
+      const wbResponse = await fetch(url, fetchOptions);
+      const contentType = wbResponse.headers.get('content-type') || '';
+
+      if (contentType.includes('application/json')) {
+        const json = await wbResponse.json();
+        return res.status(wbResponse.status).json(json);
+      } else {
+        const text = await wbResponse.text();
+        return res.status(wbResponse.status).send(text);
+      }
+    } catch (err: unknown) {
+      console.error('WorkBuddy proxy error:', err);
+      const errorMsg = err instanceof Error ? err.message : 'Proxy request failed';
+      return res.status(500).json({ error: errorMsg });
+    }
+  });
+
+  if (process.env.NODE_ENV === 'production') {
+    app.use(express.static(path.resolve(__dirname, 'dist')));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
+    });
+  } else {
+    const { createServer } = await import('vite');
+    const vite = await createServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(\`WorkBuddy Tool server running on port \${PORT}\`);
+  });
+}
+
+startServer();`,
+  },
+  {
+    path: '.github/workflows/build.yml',
+    language: 'yaml',
+    content: `name: Build and Release Windows EXE
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release Version'
+        required: false
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install Dependencies
+        run: npm ci || npm install
+      - name: Build Web Dist
+        run: npm run build
+      - name: Package Windows Desktop App (.exe)
+        run: npx electron-builder --win --x64
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: \${{ github.ref_name || inputs.version || 'v1.0.0' }}
+          name: WorkBuddy 账号日常工具 \${{ github.ref_name || inputs.version || 'v1.0.0' }}
+          files: release/*.exe
+          draft: false
+          prerelease: false`,
   },
   {
     path: 'electron/main.cjs',
@@ -51,7 +185,7 @@ function createWindow() {
     height: 840,
     minWidth: 1024,
     minHeight: 700,
-    title: 'WorkBuddy 账号日常工具 v0.5.9',
+    title: 'WorkBuddy 账号日常工具 v1.0.0',
     backgroundColor: '#0f172a',
     webPreferences: {
       nodeIntegration: false,
@@ -85,7 +219,7 @@ app.on('window-all-closed', () => {
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   isElectron: true,
-  appVersion: '0.5.9',
+  appVersion: '1.0.0',
 });`,
   },
   {
@@ -124,82 +258,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
 }`,
   },
   {
-    path: 'index.html',
-    language: 'html',
-    content: `<!doctype html>
-<html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>WorkBuddy 账号日常工具 v0.5.9</title>
-    <meta name="description" content="WorkBuddy 账号日常工具 - 支持多账号管理、日常自动化任务、猫猫旅行与 Windows EXE 打包" />
-  </head>
-  <body class="bg-slate-950 text-slate-100 min-h-screen">
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>`,
-  },
-  {
     path: 'README.md',
     language: 'markdown',
-    content: `# WorkBuddy 账号日常工具 (workbuddyTools)
+    content: `# WorkBuddy 账号日常工具 (workbuddyTools v1.0.0)
 
-> 账号日常自动化工具 v0.5.9，支持本地浏览器访问与打包为 Windows EXE 桌面端。
+> 真实对接官方成长中心与猫猫旅行 API，支持多账号一键日常自动化与 Windows EXE 桌面客户端。
 
-## 🌟 特性
-- 👥 **多账号集中管理**：支持国内版 / 国际版，支持 Cookie / Token 授权认证与代理设置
-- 🐱 **猫猫旅行自动化**：支持自动旅行启程、状态同步与积分奖励结算
-- ⚡ **一键执行日常**：一键自动化完成 WorkBuddy 推荐模板、AI 聊天、专家召唤、签到打卡并自动领奖
-- 🖥️ **双端就绪**：
-  - 本地浏览器运行：\`npm run dev\` 极速启动
-  - Windows EXE 桌面客户端：\`npm run build:exe\` 一键生成安装包与免安装便携版
-
-## 🚀 本地开发与启动
-
-\`\`\`bash
-# 1. 安装依赖
-npm install
-
-# 2. 启动本地浏览器服务 (端口 3000)
-npm run dev
-\`\`\`
-
-## 📦 打包为 Windows EXE 桌面端
-
-\`\`\`bash
-# 1. 安装 Electron 构建工具
-npm install -D electron electron-builder
-
-# 2. 执行编译与打包
-npm run build:exe
-
-# 输出可执行文件在 release/ 目录下:
-# - release/WorkBuddy 账号日常工具 Setup 0.5.9.exe (标准安装包)
-# - release/WorkBuddy 账号日常工具 0.5.9.exe (绿色便携版)
-\`\`\`
+## 🌟 核心功能
+- ⚡ **真实官方接口同步**：直连 \`https://www.workbuddy.cn\` 官方成长中心，真实同步成长任务进度、自动激活接取、自动领奖并增加积分
+- 🐱 **猫猫旅行自动化**：自动检测猫猫状态、出发旅行并一键领取旅行收益
+- 👥 **多账号集中管理**：支持快速添加/切换多个账号，支持 Cookie 与 Token 认证
+- 🖥️ **本地浏览器 + Windows EXE**：
+  - 本地浏览器运行：\`npm run dev\`
+  - GitHub 云端自动打包 EXE：推送 tag 或在 Actions 中一键运行构建
 `,
-  },
-  {
-    path: 'src/main.tsx',
-    language: 'typescript',
-    content: `import { createRoot } from 'react-dom/client';
-import App from './App.tsx';
-import './index.css';
-
-createRoot(document.getElementById('root')!).render(<App />);`,
-  },
-  {
-    path: 'src/index.css',
-    language: 'css',
-    content: `@import "tailwindcss";
-
-@layer base {
-  body {
-    background-color: #0b0f19;
-    color: #f1f5f9;
-  }
-}`,
   },
 ];
 
@@ -215,7 +287,7 @@ export async function downloadProjectZip(customFiles?: ProjectFile[]): Promise<v
   const url = URL.createObjectURL(content);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `workbuddyTools-v0.5.9.zip`;
+  a.download = `workbuddyTools-v1.0.0.zip`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
