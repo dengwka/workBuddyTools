@@ -113,7 +113,7 @@ export const GitHubSyncPanel: React.FC<GitHubSyncPanelProps> = ({ onOpenGuide })
     e.preventDefault();
     if (!token || !user) return;
     if (!newRepoName.trim()) {
-      alert('请输入仓库名称');
+      addLog('warning', '请输入仓库名称');
       return;
     }
 
@@ -129,7 +129,6 @@ export const GitHubSyncPanel: React.FC<GitHubSyncPanelProps> = ({ onOpenGuide })
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '创建仓库失败';
       addLog('error', `创建仓库失败: ${msg}`);
-      alert(msg);
     } finally {
       setIsCreatingRepo(false);
     }
@@ -137,11 +136,11 @@ export const GitHubSyncPanel: React.FC<GitHubSyncPanelProps> = ({ onOpenGuide })
 
   const handlePushToGitHub = async () => {
     if (!token || !user) {
-      alert('请先输入并验证 GitHub Token');
+      addLog('warning', '请先输入并验证 GitHub Token');
       return;
     }
     if (!selectedRepo) {
-      alert('请选择目标仓库，或新建一个仓库');
+      addLog('warning', '请选择目标仓库，或新建一个仓库');
       return;
     }
 

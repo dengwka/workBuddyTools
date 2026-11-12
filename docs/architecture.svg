@@ -1,0 +1,240 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 620" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradients -->
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#090d16"/>
+      <stop offset="50%" stop-color="#0b1329"/>
+      <stop offset="100%" stop-color="#080e1a"/>
+    </linearGradient>
+
+    <!-- Card Gradients -->
+    <linearGradient id="card-grad-1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#111827"/>
+      <stop offset="100%" stop-color="#1f2937"/>
+    </linearGradient>
+
+    <linearGradient id="card-grad-cyan" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0e2a35"/>
+      <stop offset="100%" stop-color="#163848"/>
+    </linearGradient>
+
+    <linearGradient id="card-grad-emerald" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#092921"/>
+      <stop offset="100%" stop-color="#113e33"/>
+    </linearGradient>
+
+    <linearGradient id="card-grad-purple" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#24143a"/>
+      <stop offset="100%" stop-color="#321c4e"/>
+    </linearGradient>
+
+    <linearGradient id="card-grad-blue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0c213d"/>
+      <stop offset="100%" stop-color="#15325b"/>
+    </linearGradient>
+
+    <!-- Accent Gradients -->
+    <linearGradient id="accent-emerald" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#34d399"/>
+    </linearGradient>
+
+    <linearGradient id="accent-cyan" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+
+    <linearGradient id="accent-indigo" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+
+    <linearGradient id="accent-amber" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#fbbf24"/>
+    </linearGradient>
+
+    <!-- Arrow Marker -->
+    <marker id="arrow-emerald" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#10b981"/>
+    </marker>
+    <marker id="arrow-cyan" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#06b6d4"/>
+    </marker>
+    <marker id="arrow-indigo" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M 0 0 L 8 4 L 0 8 Z" fill="#6366f1"/>
+    </marker>
+
+    <!-- Filters -->
+    <filter id="glow-cyan" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+    <filter id="shadow-card" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="6" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+
+  <!-- Background Base -->
+  <rect width="1000" height="620" rx="16" fill="url(#bg-grad)"/>
+  <rect width="998" height="618" x="1" y="1" rx="15" fill="none" stroke="#1e293b" stroke-width="1.5"/>
+
+  <!-- Subtle Dot Grid -->
+  <g opacity="0.12">
+    <circle cx="50" cy="50" r="1.5" fill="#38bdf8"/>
+    <circle cx="150" cy="50" r="1.5" fill="#38bdf8"/>
+    <circle cx="250" cy="50" r="1.5" fill="#38bdf8"/>
+    <circle cx="350" cy="50" r="1.5" fill="#38bdf8"/>
+    <circle cx="450" cy="50" r="1.5" fill="#38bdf8"/>
+    <circle cx="550" cy="50" r="1.5" fill="#38bdf8"/>
+    <circle cx="650" cy="50" r="1.5" fill="#38bdf8"/>
+    <circle cx="750" cy="50" r="1.5" fill="#38bdf8"/>
+    <circle cx="850" cy="50" r="1.5" fill="#38bdf8"/>
+    <circle cx="950" cy="50" r="1.5" fill="#38bdf8"/>
+  </g>
+
+  <!-- Title Section -->
+  <g transform="translate(40, 28)">
+    <rect x="0" y="0" width="28" height="28" rx="6" fill="#10b981"/>
+    <text x="14" y="19" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="14" fill="#ffffff" text-anchor="middle">W</text>
+    
+    <text x="40" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="18" fill="#f8fafc">WorkBuddy 账号日常工具 · 系统技术架构图 (Architecture)</text>
+    <text x="740" y="20" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="12" fill="#94a3b8">v1.0.0 Production Release</text>
+  </g>
+
+  <!-- ==================== TIER 1: 用户接入与展示层 (Presentation Layer) ==================== -->
+  <g transform="translate(40, 75)">
+    <!-- Group Container -->
+    <rect width="920" height="105" rx="12" fill="#0f172a" fill-opacity="0.8" stroke="#334155" stroke-width="1.2" filter="url(#shadow-card)"/>
+    <text x="20" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="12" fill="#38bdf8" letter-spacing="0.5">LAYER 1 · 客户端展示与交互层 (Presentation &amp; UI Shell)</text>
+    
+    <!-- Sub-node 1: React Web SPA -->
+    <g transform="translate(20, 36)">
+      <rect width="280" height="55" rx="8" fill="url(#card-grad-cyan)" stroke="#0284c7" stroke-width="1"/>
+      <text x="14" y="23" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="12" fill="#f0f9ff">本地 Web 访问端 (Browser)</text>
+      <text x="14" y="42" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10.5" fill="#7dd3fc">React 19 + TypeScript + Tailwind CSS</text>
+    </g>
+
+    <!-- Sub-node 2: Electron Desktop EXE -->
+    <g transform="translate(320, 36)">
+      <rect width="280" height="55" rx="8" fill="url(#card-grad-emerald)" stroke="#059669" stroke-width="1"/>
+      <text x="14" y="23" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="12" fill="#ecfdf5">Windows 桌面 EXE 客户端</text>
+      <text x="14" y="42" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10.5" fill="#6ee7b7">Electron 31 + 无边框原生窗口 + Preload IPC</text>
+    </g>
+
+    <!-- Sub-node 3: Real-time UI Matrix -->
+    <g transform="translate(620, 36)">
+      <rect width="280" height="55" rx="8" fill="url(#card-grad-1)" stroke="#475569" stroke-width="1"/>
+      <text x="14" y="23" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="12" fill="#f8fafc">交互控制中心 (Dashboard)</text>
+      <text x="14" y="42" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10.5" fill="#94a3b8">双击编辑/更新凭据 · 任务过滤 · 猫猫旅行</text>
+    </g>
+  </g>
+
+  <!-- Connectors L1 -> L2 -->
+  <path d="M 180 180 L 180 205" stroke="#0284c7" stroke-width="1.8" stroke-dasharray="3,3" marker-end="url(#arrow-cyan)"/>
+  <path d="M 460 180 L 460 205" stroke="#059669" stroke-width="1.8" stroke-dasharray="3,3" marker-end="url(#arrow-emerald)"/>
+  <path d="M 760 180 L 760 205" stroke="#6366f1" stroke-width="1.8" stroke-dasharray="3,3" marker-end="url(#arrow-indigo)"/>
+
+  <!-- ==================== TIER 2: 核心自动化调度层 (Core Engine & State) ==================== -->
+  <g transform="translate(40, 210)">
+    <!-- Group Container -->
+    <rect width="920" height="120" rx="12" fill="#0f172a" fill-opacity="0.8" stroke="#334155" stroke-width="1.2" filter="url(#shadow-card)"/>
+    <text x="20" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="12" fill="#34d399" letter-spacing="0.5">LAYER 2 · 核心调度与业务执行引擎 (Automation Engine &amp; State)</text>
+
+    <!-- Sub-node 1: Multi-Account Manager -->
+    <g transform="translate(20, 36)">
+      <rect width="210" height="70" rx="8" fill="url(#card-grad-1)" stroke="#059669" stroke-width="1"/>
+      <text x="12" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="11.5" fill="#a7f3d0">多账号管理与鉴权池</text>
+      <text x="12" y="40" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#94a3b8">· Cookie / Bearer Token 鉴权</text>
+      <text x="12" y="56" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#94a3b8">· 双击即时编辑与本地持久化</text>
+    </g>
+
+    <!-- Sub-node 2: Live Points Tracker -->
+    <g transform="translate(245, 36)">
+      <rect width="210" height="70" rx="8" fill="url(#card-grad-emerald)" stroke="#10b981" stroke-width="1"/>
+      <text x="12" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="11.5" fill="#6ee7b7">实时官方积分自动同步</text>
+      <text x="12" y="40" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#d1fae5">· 调官方服务自动获取可用积分</text>
+      <text x="12" y="56" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#d1fae5">· 套餐基础分 + 平台奖励积分</text>
+    </g>
+
+    <!-- Sub-node 3: Task Flow Automation -->
+    <g transform="translate(470, 36)">
+      <rect width="210" height="70" rx="8" fill="url(#card-grad-1)" stroke="#38bdf8" stroke-width="1"/>
+      <text x="12" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="11.5" fill="#bae6fd">成长任务闭环执行器</text>
+      <text x="12" y="40" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#94a3b8">· 自动批量接取未开始任务</text>
+      <text x="12" y="56" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#94a3b8">· 进度监控、打卡与一键领奖</text>
+    </g>
+
+    <!-- Sub-node 4: Cat Travel Pilot -->
+    <g transform="translate(695, 36)">
+      <rect width="205" height="70" rx="8" fill="url(#card-grad-purple)" stroke="#818cf8" stroke-width="1"/>
+      <text x="12" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="11.5" fill="#c7d2fe">猫猫旅行 (Buddy Travel)</text>
+      <text x="12" y="40" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#e0e7ff">· 实时状态查询 (/status)</text>
+      <text x="12" y="56" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#e0e7ff">· 智能一键启程 &amp; 归来领奖</text>
+    </g>
+  </g>
+
+  <!-- Connectors L2 -> L3 -->
+  <path d="M 350 330 L 350 355" stroke="#10b981" stroke-width="1.8" stroke-dasharray="3,3" marker-end="url(#arrow-emerald)"/>
+  <path d="M 575 330 L 575 355" stroke="#38bdf8" stroke-width="1.8" stroke-dasharray="3,3" marker-end="url(#arrow-cyan)"/>
+
+  <!-- ==================== TIER 3: 网络通信与跨域中继层 (Network & Transport) ==================== -->
+  <g transform="translate(40, 360)">
+    <!-- Group Container -->
+    <rect width="920" height="105" rx="12" fill="#0f172a" fill-opacity="0.8" stroke="#334155" stroke-width="1.2" filter="url(#shadow-card)"/>
+    <text x="20" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="12" fill="#a855f7" letter-spacing="0.5">LAYER 3 · 双通道网络与跨域穿透中继层 (Dual Transport &amp; Anti-CORS Proxy)</text>
+
+    <!-- Sub-node 1: Express Server Proxy -->
+    <g transform="translate(20, 36)">
+      <rect width="435" height="55" rx="8" fill="url(#card-grad-blue)" stroke="#2563eb" stroke-width="1"/>
+      <text x="16" y="23" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="12" fill="#bfdbfe">Web 模式：Express 服务端反向中继 (/api/workbuddy/proxy)</text>
+      <text x="16" y="42" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10.5" fill="#93c5fd">自动重写 Origin / Referer 标头 · 突破浏览器 CORS 跨域安全拦截</text>
+    </g>
+
+    <!-- Sub-node 2: Electron Native Fetch -->
+    <g transform="translate(470, 36)">
+      <rect width="430" height="55" rx="8" fill="url(#card-grad-cyan)" stroke="#0891b2" stroke-width="1"/>
+      <text x="16" y="23" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="12" fill="#cffafe">EXE 模式：Electron 原生网络层 (Native TCP Fetch)</text>
+      <text x="16" y="42" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10.5" fill="#67e8f9">基于 Chromium 网络栈直连官方 API · 支持系统级 HTTP/SOCKS 代理</text>
+    </g>
+  </g>
+
+  <!-- Connectors L3 -> L4 -->
+  <path d="M 235 465 L 235 490" stroke="#2563eb" stroke-width="2" marker-end="url(#arrow-cyan)"/>
+  <path d="M 685 465 L 685 490" stroke="#0891b2" stroke-width="2" marker-end="url(#arrow-cyan)"/>
+
+  <!-- ==================== TIER 4: 腾讯 WorkBuddy 官方云端服务 (Official Cloud Cluster) ==================== -->
+  <g transform="translate(40, 495)">
+    <!-- Group Container -->
+    <rect width="920" height="105" rx="12" fill="#0b1728" stroke="#1d4ed8" stroke-width="1.4" filter="url(#shadow-card)"/>
+    <text x="20" y="24" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="12" fill="#60a5fa" letter-spacing="0.5">LAYER 4 · 腾讯 WorkBuddy 官方云端生产环境 (Official WorkBuddy Cloud)</text>
+
+    <!-- Sub-node 1: APISIX Gateway -->
+    <g transform="translate(20, 36)">
+      <rect width="210" height="55" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="1"/>
+      <text x="12" y="23" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="11.5" fill="#ffffff">APISIX 网关鉴权</text>
+      <text x="12" y="42" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#93c5fd">Session / Cookie 验签路由</text>
+    </g>
+
+    <!-- Sub-node 2: Billing Summary -->
+    <g transform="translate(245, 36)">
+      <rect width="210" height="55" rx="8" fill="#1e293b" stroke="#10b981" stroke-width="1"/>
+      <text x="12" y="23" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="11.5" fill="#a7f3d0">用户资产与计量中心</text>
+      <text x="12" y="42" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#6ee7b7">/billing/meter/get-user-resource</text>
+    </g>
+
+    <!-- Sub-node 3: Growth Tasks API -->
+    <g transform="translate(470, 36)">
+      <rect width="210" height="55" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="1"/>
+      <text x="12" y="23" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="11.5" fill="#fde68a">成长任务中台接口</text>
+      <text x="12" y="42" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#fcd34d">/v2/activity/growth/tasks/*</text>
+    </g>
+
+    <!-- Sub-node 4: Buddy Travel API -->
+    <g transform="translate(695, 36)">
+      <rect width="205" height="55" rx="8" fill="#1e293b" stroke="#8b5cf6" stroke-width="1"/>
+      <text x="12" y="23" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="bold" font-size="11.5" fill="#ddd6fe">猫猫旅行与每日签到</text>
+      <text x="12" y="42" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="10" fill="#c4b5fd">/activity/growth/buddy/travel/*</text>
+    </g>
+  </g>
+</svg>

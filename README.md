@@ -1,7 +1,7 @@
 # WorkBuddy 账号日常工具 (workbuddyTools)
 
 <p align="center">
-  <img src="public/assets/aistudio/934be8e6-d921-42fb-88d4-55353662b39b_a77df796.jpg" alt="WorkBuddy 账号日常工具" width="720" style="border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.12);" />
+  <img src="public/assets/workbuddy_preview_v100.svg" alt="WorkBuddy 账号日常工具 v1.0.0" width="860" style="border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.5);" />
 </p>
 
 <p align="center">
@@ -31,42 +31,32 @@
 - ⚡ **真实官方接口直连**：
   - 彻底告别虚假模拟！系统直连 `https://www.workbuddy.cn` 官方成长中心 API（`/v2/activity/growth/tasks`、`/activity/growth/tasks/accept`、`/activity/growth/tasks/{code}/claim`）。
   - 真实拉取成长计划实时状态，批量激活并接取任务，自动将任务奖励真实领入你的账户。
+- 💰 **官方实时积分自动获取**：
+  - 调官方服务接口 (`/billing/meter/get-user-resource-summary`) 自动获取最新可用积分与平台奖励分，随时点击顶部刷新按钮一键同步。
+- 🔄 **账号双击快捷编辑与凭据维护**：
+  - 双击左侧任意账号行（或点击编辑图标）即可唤起编辑面板，随时更新 Cookie / Token 凭据；
+  - 面板内置「测试凭据并自动获取实时积分」功能，连通性秒级诊断，无缝保存生效。
 - 🐱 **猫猫旅行 (Buddy Travel) 全自动托管**：
   - 实时查询猫猫当前旅行状态（就绪 / 旅行中 / 今日已达上限）；
   - 智能执行一键启程（`/depart`）与旅行归来积分自动结算（`/claim`）。
 - 👥 **多账号集中管理与隔离**：
   - 支持无限量配置多个账号，涵盖「国内版」与「国际版 (Global)」；
   - 支持 **Cookie** 或 **Bearer Token** 双鉴权模式，内置代理服务器（Proxy）配置选项；
-  - 提供账号列表批量检索、单选/多选/全选/反选与批量运行。
-- 📊 **真实积分与资产汇总**：
-  - 实时同步官方 `/billing/meter/get-user-resource-summary`，动态刷新账户可用积分、套餐额度及消耗明细。
+  - 提供账号列表批量检索、单选/多选/全选/反选与批量运行；
+  - 内置防误触删除确认对话框，彻底杜绝浏览器原生弹窗阻塞。
 - 🖥️ **双端架构支持 (Local Web + Windows Desktop EXE)**：
-  - **本地 Web 模式**：内置 Express 代理服务 (`/api/workbuddy/proxy`)，彻底消除浏览器跨域 CORS 拦截；
+  - **本地 Web 模式**：内置 Express 代理服务 (`/api/workbuddy/proxy`)，自动重写 Origin/Referer 标头，彻底消除浏览器跨域 CORS 拦截；
   - **桌面客户端模式**：内置完整 Electron 架构，可独立运行于 Windows 操作系统，无任何外部浏览器依赖。
 - ☁️ **GitHub Actions 云端自动构建**：
   - 内置 `.github/workflows/build.yml` 自动化流水线，推送新版本 Tag 自动调用云端 Windows Runner 编译输出安装版与免安装绿色版 `.exe`。
 
 ---
 
-## 🛠️ 技术架构
+## 🛠️ 系统技术架构
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                   WorkBuddy Tools Desktop / Web UI                     │
-│               (React 19 + TypeScript + Tailwind CSS)                   │
-├──────────────────────────────────┬─────────────────────────────────────┤
-│      多账号管理中心 (Storage)      │         任务与猫猫旅行控制台         │
-│  - Cookie / Token 凭据管理       │  - 成长任务列表过滤 (全部/未完成/已领奖)│
-│  - 批量选择与代理配置              │  - 猫猫自动启程 / 奖励领取          │
-├──────────────────────────────────┴─────────────────────────────────────┤
-│         双通道网络交互层 (Dual Transport & Anti-CORS Proxy)             │
-│   Web 模式: Express Server Proxy (/api/workbuddy/proxy)                │
-│   EXE 模式: Electron Native Fetch (直连 APISIX Gateway)                │
-├────────────────────────────────────────────────────────────────────────┤
-│                      Tencent WorkBuddy 官方服务端                       │
-│  /billing/meter/*  ·  /v2/activity/growth/*  ·  /activity/growth/buddy/*│
-└────────────────────────────────────────────────────────────────────────┘
-```
+<p align="center">
+  <img src="docs/architecture.svg" alt="WorkBuddy 账号日常工具 - 系统技术架构图" width="860" style="border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.4);" />
+</p>
 
 ---
 

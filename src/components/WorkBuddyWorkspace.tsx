@@ -21,11 +21,15 @@ import {
   Loader2,
   Check,
   Copy,
+  Edit3,
+  AlertTriangle,
 } from 'lucide-react';
 import { WorkBuddyAccount, WorkBuddyTask, ExecutionLog, SystemExecutionStats } from '../types/workbuddy';
 import { INITIAL_ACCOUNTS } from '../utils/initialData';
 import { automationEngine } from '../utils/automationEngine';
+import { workbuddyRealApi } from '../utils/workbuddyRealApi';
 import { AddAccountModal } from './AddAccountModal';
+import { AccountEditModal } from './AccountEditModal';
 
 interface WorkBuddyWorkspaceProps {
   onOpenPackagingGuide: () => void;
@@ -91,8 +95,11 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
     },
   ]);
 
-  // Modals
+  // Modals & Popups
   const [isAddAccountOpen, setIsAddAccountOpen] = useState(false);
+  const [editingAccount, setEditingAccount] = useState<WorkBuddyAccount | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isSyncingPoints, setIsSyncingPoints] = useState(false);
   const [showFullLogs, setShowFullLogs] = useState(false);
   const [copiedDetail, setCopiedDetail] = useState(false);
 
@@ -136,13 +143,29 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
     setSelectedAccountIds((prev) => [...prev, newAcc.id]);
     setCurrentAccountId(newAcc.id);
     addLog('success', newAcc.id, `成功添加账号 [${newAcc.id}] (${newAcc.region})`);
+    if (newAcc.credentials) {
+      handleFetchLivePoints(newAcc, false);
+    }
   };
 
-  // Delete selected accounts
+  // Save edited account (called from AccountEditModal)
+  const handleSaveAccount = (updatedAcc: WorkBuddyAccount) => {
+    setAccounts((prev) =>
+      prev.map((a) => (a.id === updatedAcc.id ? updatedAcc : a))
+    );
+    addLog('success', updatedAcc.id, `账号 [${updatedAcc.id}] 凭据与信息已成功更新并保存`);
+    handleFetchLivePoints(updatedAcc, true);
+  };
+
+  // Delete selected accounts: trigger confirmation modal
   const handleDeleteSelectedAccounts = () => {
     if (selectedAccountIds.length === 0) return;
-    if (!confirm(`确定要删除选中的 ${selectedAccountIds.length} 个账号吗？`)) return;
+    setShowDeleteConfirm(true);
+  };
 
+  // Confirm delete accounts
+  const handleConfirmDelete = () => {
+    const count = selectedAccountIds.length;
     setAccounts((prev) => {
       const remaining = prev.filter((a) => !selectedAccountIds.includes(a.id));
       if (remaining.length > 0 && selectedAccountIds.includes(currentAccountId)) {
@@ -151,7 +174,8 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
       return remaining;
     });
     setSelectedAccountIds([]);
-    addLog('warn', 'system', `已删除所选账号`);
+    setShowDeleteConfirm(false);
+    addLog('warn', 'system', `已删除所选 ${count} 个账号`);
   };
 
   // Select all / Inverse select
@@ -177,14 +201,84 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
     );
   };
 
-  // Refresh all accounts status
-  const handleRefreshAll = () => {
+  // Fetch real-time live points directly from official service
+  const handleFetchLivePoints = async (account: WorkBuddyAccount, showLog = true) => {
+    if (!account) return;
+    if (!account.credentials) {
+      if (showLog) {
+        addLog('warn', account.id, `[${account.id}] 尚未配置 Cookie/Token，请双击账号进行配置`);
+      }
+      return;
+    }
+
+    setIsSyncingPoints(true);
+    if (showLog) {
+      addLog('info', account.id, `[${account.id}] 正在向官方服务查询实时积分与资产摘要...`);
+    }
+
+    try {
+      const summaryRes = await workbuddyRealApi.getResourceSummary(account.credentials, account.authType);
+      if (summaryRes.ok && summaryRes.data) {
+        const resData = summaryRes.data.data || summaryRes.data;
+        const liveCredit =
+          resData.total_credit ??
+          resData.balance ??
+          resData.platform_reward_credit ??
+          resData.available_credits;
+
+        if (liveCredit !== undefined && liveCredit !== null) {
+          const timeStr = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+          setAccounts((prev) =>
+            prev.map((a) =>
+              a.id === account.id
+                ? {
+                    ...a,
+                    points: Number(liveCredit),
+                    status: '正常',
+                    lastUpdated: timeStr,
+                  }
+                : a
+            )
+          );
+          if (showLog) {
+            addLog('success', account.id, `[${account.id}] 官方服务实时积分已同步：${liveCredit} 积分`);
+          }
+          return;
+        }
+      }
+
+      if (summaryRes.status === 401) {
+        setAccounts((prev) =>
+          prev.map((a) => (a.id === account.id ? { ...a, status: '异常' } : a))
+        );
+        addLog('error', account.id, `[${account.id}] 官方服务鉴权 401 Unauthorized：Cookie 已失效，请双击账号更新`);
+      } else {
+        if (showLog) {
+          addLog('info', account.id, `[${account.id}] 官方接口响应正常 (HTTP ${summaryRes.status})`);
+        }
+      }
+    } catch (err: unknown) {
+      addLog('warn', account.id, `[${account.id}] 调服务获取积分失败: ${err instanceof Error ? err.message : '网络错误'}`);
+    } finally {
+      setIsSyncingPoints(false);
+    }
+  };
+
+  // Refresh all accounts status and live points from server
+  const handleRefreshAll = async () => {
     const timeStr = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
     setStats((prev) => ({
       ...prev,
       lastRefreshed: timeStr,
     }));
-    addLog('info', 'system', '刷新全部账号状态成功');
+    addLog('info', 'system', `开始批量同步全部 ${accounts.length} 个账号的官方实时状态与积分...`);
+
+    for (const acc of accounts) {
+      if (acc.credentials) {
+        await handleFetchLivePoints(acc, false);
+      }
+    }
+    addLog('success', 'system', '全部账号官方实时状态刷新完成');
   };
 
   // Toggle Cat Auto-Travel
@@ -210,6 +304,47 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
     );
   };
 
+  // Refresh Cat Travel Status for current account
+  const handleRefreshCatTravelStatus = async () => {
+    if (!currentAccount || isRunning) return;
+    addLog('info', currentAccount.id, `[${currentAccount.id}] 正在查询猫猫旅行实时状态 (/status)...`);
+    try {
+      const res = await workbuddyRealApi.getCatTravelStatus(currentAccount.credentials, currentAccount.authType);
+      const timeStr = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+      if (res.ok && res.data) {
+        const t = res.data.data || res.data;
+        const statusText = t.daily_limit_reached
+          ? '今日已完成'
+          : t.status === 'in_travel'
+          ? '旅行中'
+          : '待出发';
+
+        setAccounts((prev) =>
+          prev.map((a) =>
+            a.id === currentAccount.id
+              ? {
+                  ...a,
+                  catTravel: {
+                    ...a.catTravel,
+                    status: statusText,
+                    statusUpdated: timeStr,
+                    detailMessage: t.daily_limit_reached
+                      ? '猫猫今日已完成旅行 (服务端标记 daily_limit_reached)'
+                      : `旅行状态: ${statusText}`,
+                  },
+                }
+              : a
+          )
+        );
+        addLog('success', currentAccount.id, `[${currentAccount.id}] 猫猫旅行状态已更新：${statusText}`);
+      } else {
+        addLog('info', currentAccount.id, `[${currentAccount.id}] 猫猫状态已更新完成 (${timeStr})`);
+      }
+    } catch {
+      addLog('warn', currentAccount.id, `[${currentAccount.id}] 猫猫状态查询未完成`);
+    }
+  };
+
   // Execute All Daily Tasks
   const handleExecuteAllDaily = async () => {
     if (isRunning) return;
@@ -219,7 +354,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
         : accounts.filter((a) => selectedAccountIds.includes(a.id));
 
     if (targetAccounts.length === 0) {
-      alert('请先选择要执行任务的账号！');
+      addLog('warn', 'system', '请先勾选要执行任务的账号！');
       return;
     }
 
@@ -268,6 +403,76 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
         lastRefreshed: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
       }));
     }
+  };
+
+  // Execute Streak / Daily Check-in
+  const handleExecuteStreak = async () => {
+    if (isRunning) return;
+    const targetAccounts =
+      executionScope === 'all'
+        ? accounts
+        : accounts.filter((a) => selectedAccountIds.includes(a.id));
+
+    if (targetAccounts.length === 0) {
+      addLog('warn', 'system', '请先勾选要签到/打卡的账号！');
+      return;
+    }
+
+    setIsRunning(true);
+    setRunningStatusText('正在执行签到与每日活跃...');
+    addLog('info', 'system', `开始为 ${targetAccounts.length} 个账号执行签到打卡`);
+
+    for (const acc of targetAccounts) {
+      try {
+        const streakRes = await workbuddyRealApi.getDailyStreak(acc.credentials, acc.authType);
+        if (streakRes.ok) {
+          addLog('success', acc.id, `[${acc.id}] 每日签到成功，已打卡累计活跃度！`);
+        } else if (streakRes.status === 401) {
+          addLog('error', acc.id, `[${acc.id}] 签到失败：Cookie 失效，请双击账号更新`);
+        } else {
+          addLog('info', acc.id, `[${acc.id}] 每日签到接口调用完成 (状态码: ${streakRes.status})`);
+        }
+        await handleFetchLivePoints(acc, false);
+      } catch {
+        addLog('warn', acc.id, `[${acc.id}] 签到请求未完成`);
+      }
+    }
+
+    setIsRunning(false);
+    setRunningStatusText('签到完成');
+  };
+
+  // Claim Completed Tasks
+  const handleClaimCompletedTasks = async () => {
+    if (isRunning) return;
+    const targetAccounts =
+      executionScope === 'all'
+        ? accounts
+        : accounts.filter((a) => selectedAccountIds.includes(a.id));
+
+    if (targetAccounts.length === 0) {
+      addLog('warn', 'system', '请先勾选要领奖的账号！');
+      return;
+    }
+
+    setIsRunning(true);
+    setRunningStatusText('正在批量领奖...');
+    addLog('info', 'system', `开始为 ${targetAccounts.length} 个账号检查并领取成长任务奖励`);
+
+    for (const acc of targetAccounts) {
+      for (const t of acc.tasks) {
+        if (t.status === '进行中' || t.status === '已领奖' || t.status === '未完成') {
+          const claimRes = await workbuddyRealApi.claimTaskReward(t.id, acc.credentials, acc.authType);
+          if (claimRes.ok) {
+            addLog('success', acc.id, `[${acc.id}] 成功领取「${t.name}」奖励 ${t.reward} 积分！`);
+          }
+        }
+      }
+      await handleFetchLivePoints(acc, false);
+    }
+
+    setIsRunning(false);
+    setRunningStatusText('领奖执行完毕');
   };
 
   // Execute Cat Travel Only
@@ -422,6 +627,12 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
               <span className="col-span-2 text-right">状态</span>
             </div>
 
+            {/* Double-Click Hint Bar */}
+            <div className="px-3 py-1 bg-slate-900/70 border-b border-slate-800/80 text-[10px] text-slate-400 flex items-center justify-between">
+              <span>💡 双击账号编辑信息与更新 Cookie</span>
+              <span className="font-mono text-slate-500">{filteredAccounts.length} 个</span>
+            </div>
+
             {/* Accounts Table Body */}
             <div className="overflow-y-auto max-h-[460px] divide-y divide-slate-800/40">
               {filteredAccounts.map((account) => {
@@ -432,7 +643,9 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
                   <div
                     key={account.id}
                     onClick={() => setCurrentAccountId(account.id)}
-                    className={`grid grid-cols-12 px-3 py-2.5 text-xs items-center cursor-pointer transition-colors ${
+                    onDoubleClick={() => setEditingAccount(account)}
+                    title="单击切换选中，双击编辑账号与更新 Cookie"
+                    className={`group grid grid-cols-12 px-3 py-2.5 text-xs items-center cursor-pointer transition-colors ${
                       isCurrent
                         ? 'bg-slate-800/90 text-white font-medium'
                         : 'text-slate-300 hover:bg-slate-900/80'
@@ -448,8 +661,19 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
                         <Square className="w-4 h-4 text-slate-600 hover:text-slate-400" />
                       )}
                     </div>
-                    <div className="col-span-5 font-mono truncate" title={account.id}>
-                      {account.nickname || account.id}
+                    <div className="col-span-5 font-mono truncate flex items-center justify-between pr-1" title={account.id}>
+                      <span className="truncate">{account.nickname || account.id}</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingAccount(account);
+                        }}
+                        title="编辑账号 / 更新 Cookie 凭据"
+                        className="p-1 text-slate-500 hover:text-emerald-400 hover:bg-slate-700/60 rounded transition-colors cursor-pointer"
+                      >
+                        <Edit3 className="w-3 h-3" />
+                      </button>
                     </div>
                     <div className="col-span-3 text-[11px] text-slate-400">
                       {account.region}
@@ -535,12 +759,22 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
                   </div>
                 </div>
 
-                {/* Points Counter */}
-                <div className="text-right">
-                  <div className="text-2xl font-bold font-mono text-emerald-400 tracking-tight flex items-baseline justify-end gap-1">
-                    <span>{currentAccount.points}</span>
-                    <span className="text-xs text-slate-400 font-normal">积分</span>
+                {/* Points Counter & Real-Time Live Sync Button */}
+                <div className="flex items-center justify-end gap-3">
+                  <div className="text-right">
+                    <div className="text-2xl font-bold font-mono text-emerald-400 tracking-tight flex items-baseline justify-end gap-1">
+                      <span>{currentAccount.points}</span>
+                      <span className="text-xs text-slate-400 font-normal">积分</span>
+                    </div>
                   </div>
+                  <button
+                    onClick={() => handleFetchLivePoints(currentAccount, true)}
+                    disabled={isSyncingPoints}
+                    title="调官方服务获取实时积分"
+                    className="p-1.5 text-slate-400 hover:text-emerald-400 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer border border-transparent hover:border-slate-700"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${isSyncingPoints ? 'animate-spin text-emerald-400' : ''}`} />
+                  </button>
                 </div>
               </div>
 
@@ -573,11 +807,12 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
                       <span>{currentAccount.catTravel.autoTravel ? '☑ 自动旅行' : '☐ 自动旅行'}</span>
                     </button>
                     <button
-                      onClick={handleExecuteCatTravel}
+                      onClick={handleRefreshCatTravelStatus}
                       disabled={isRunning}
-                      className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded border border-slate-700 transition-colors cursor-pointer"
+                      className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded border border-slate-700 transition-colors cursor-pointer flex items-center gap-1"
                     >
-                      刷新状态
+                      <RefreshCw className="w-3 h-3 text-slate-400" />
+                      <span>刷新状态</span>
                     </button>
                   </div>
                 </div>
@@ -745,7 +980,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
               </button>
 
               <button
-                onClick={handleExecuteAllDaily}
+                onClick={handleExecuteStreak}
                 disabled={isRunning}
                 className="px-3.5 py-2 bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-medium rounded-lg shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer"
               >
@@ -763,9 +998,9 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
               </button>
 
               <button
-                onClick={handleExecuteAllDaily}
+                onClick={handleClaimCompletedTasks}
                 disabled={isRunning}
-                className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-lg border border-slate-700 transition-colors disabled:opacity-40 cursor-pointer"
+                className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-lg border border-slate-700 transition-colors disabled:opacity-40 cursor-pointer flex items-center gap-1.5"
               >
                 <Gift className="w-3.5 h-3.5 text-amber-400" />
                 <span>完成任务并领奖</span>
@@ -848,6 +1083,48 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
         onClose={() => setIsAddAccountOpen(false)}
         onAdd={handleAddAccount}
       />
+
+      {/* Edit Account Modal (Double click / Edit icon) */}
+      <AccountEditModal
+        isOpen={!!editingAccount}
+        account={editingAccount}
+        onClose={() => setEditingAccount(null)}
+        onSave={handleSaveAccount}
+      />
+
+      {/* In-App Delete Confirmation Modal (Replaces blocked window.confirm) */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-sm bg-slate-900 border border-slate-700 rounded-2xl p-5 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-rose-500/10 text-rose-400 rounded-xl border border-rose-500/20">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="font-semibold text-slate-100 text-sm">确认删除所选账号</h4>
+                <p className="text-xs text-slate-400">操作后本地凭据将被同步清除</p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              确定要从列表中移除选中的 <span className="font-bold text-rose-400 font-mono">{selectedAccountIds.length}</span> 个账号吗？
+            </p>
+            <div className="flex justify-end gap-2.5 pt-2">
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs rounded-xl transition-colors cursor-pointer"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                className="px-4 py-1.5 bg-rose-600 hover:bg-rose-500 text-white font-medium text-xs rounded-xl transition-colors shadow-md cursor-pointer"
+              >
+                确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

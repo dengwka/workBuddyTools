@@ -18,6 +18,8 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
   const [proxyUrl, setProxyUrl] = useState('');
   const [points, setPoints] = useState<number>(1000);
 
+  const [errorMessage, setErrorMessage] = useState('');
+
   if (!isOpen) return null;
 
   const fillSample = () => {
@@ -26,16 +28,18 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
     setNickname(`WorkBuddy_${randomId.slice(-4)}`);
     setRegion('国内版');
     setAuthType('cookie');
-    setCredentials(`wb_session=sess_${randomId}; token=wb_tok_${randomId}`);
+    setCredentials(`qcloud_visitId=sample_${randomId}; session=sess_${randomId}`);
     setPoints(Math.floor(1500 + Math.random() * 2500));
+    setErrorMessage('');
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!accountId.trim()) {
-      alert('请输入账号 ID 或昵称');
+      setErrorMessage('请输入账号 ID 或昵称');
       return;
     }
+    setErrorMessage('');
 
     const newAccount: WorkBuddyAccount = {
       id: accountId.trim(),
@@ -94,6 +98,12 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
 
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-6 space-y-4 text-xs">
+          {errorMessage && (
+            <div className="p-2.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 font-medium text-xs">
+              {errorMessage}
+            </div>
+          )}
+
           <div className="flex justify-end">
             <button
               type="button"
