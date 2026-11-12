@@ -1,0 +1,6 @@
+{
+  "name": "DevTool & GitHub Sync",
+  "description": "Build custom mini-tools and automatically sync or push project code to your GitHub repository.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
