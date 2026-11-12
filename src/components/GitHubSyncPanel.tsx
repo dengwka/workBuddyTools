@@ -28,7 +28,7 @@ interface GitHubSyncPanelProps {
 }
 
 export const GitHubSyncPanel: React.FC<GitHubSyncPanelProps> = ({ onOpenGuide }) => {
-  // Token state
+  // Token state: loaded securely from localStorage or env
   const [token, setToken] = useState(() => localStorage.getItem('gh_pat_token') || '');
   const [showToken, setShowToken] = useState(false);
   const [isValidating, setIsValidating] = useState(false);
@@ -38,9 +38,9 @@ export const GitHubSyncPanel: React.FC<GitHubSyncPanelProps> = ({ onOpenGuide })
   // Repositories
   const [repos, setRepos] = useState<GitHubRepo[]>([]);
   const [isLoadingRepos, setIsLoadingRepos] = useState(false);
-  const [selectedRepo, setSelectedRepo] = useState<string>('');
+  const [selectedRepo, setSelectedRepo] = useState<string>('workBuddyTools');
   const [targetBranch, setTargetBranch] = useState<string>('main');
-  const [commitMessage, setCommitMessage] = useState<string>('feat: initial release from AI Studio DevTool');
+  const [commitMessage, setCommitMessage] = useState<string>('feat: initial release of workbuddyTools v0.5.9');
 
   // New repo creation
   const [showCreateRepo, setShowCreateRepo] = useState(false);

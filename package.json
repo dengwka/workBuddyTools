@@ -1,14 +1,17 @@
 {
-  "name": "react-example",
+  "name": "workbuddy-tools",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.5.9",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "electron:dev": "vite",
+    "build:exe": "vite build && electron-builder --win --x64"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
