@@ -26,11 +26,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
 
       - name: Install Dependencies
         run: |
-          npm ci || npm install
+          npm install --legacy-peer-deps
+          npm install --legacy-peer-deps -D electron electron-builder
 
       - name: Build Web Dist
         run: |
@@ -58,13 +58,11 @@ jobs:
           draft: false
           prerelease: false
           body: |
-            ## 🚀 WorkBuddy 账号日常工具 v1.0.0
+            ### 🌟 WorkBuddy 账号日常工具 v1.0.0
 
-            ### 🌟 主要功能特性：
-            - **官方接口直连**：对接 `workbuddy.cn` 官方成长中心 API，真实完成每日成长任务与打卡活跃；
-            - **多账号集中管理**：支持批量配置多账号凭据 (Cookie / Token)，多账号一键自动化切换运行；
-            - **猫猫旅行自动化**：支持自动检测猫猫状态、自动启程旅行并领取旅行结算积分奖励；
-            - **一键执行日常与领奖**：自动化批量接取成长任务并直接将积分领取入账；
-            - **双运行模式**：支持 Windows EXE 桌面客户端开箱即用，也支持本地浏览器访问模式。
+            - **官方接口真实对接**：直连 workbuddy.cn 成长中心 API，真实完成每日成长任务与签到打卡并入账积分；
+            - **多账号集中管理**：支持配置多个账号 Cookie / Token，一键批量检测与执行；
+            - **猫猫旅行自动化**：支持自动检测猫猫状态、自动启程旅行并结算领取旅行积分奖励；
+            - **双端支持**：支持本地浏览器访问，也可下载打包后的 Windows EXE 桌面客户端直接使用。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
