@@ -1,4 +1,4 @@
-name: Build and Release Cross-Platform Packages (Windows & macOS)
+name: 构建与打包发布 (Windows .exe & macOS .dmg)
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
       version:
         description: 'Release Version'
         required: false
-        default: 'v1.1.0'
+        default: 'v1.2.0'
 
 permissions:
   contents: write
@@ -30,29 +30,16 @@ jobs:
       - name: Install Dependencies
         run: |
           npm install --legacy-peer-deps
-          npm install --legacy-peer-deps -D electron electron-builder
+          npm install --legacy-peer-deps -D electron@33.2.1 electron-builder@25.1.8
 
       - name: Build Web Dist
-        run: |
-          npm run build
+        run: npm run build
 
-      - name: Generate Authenticode Code Signing Certificate & Package Windows (.exe)
-        shell: pwsh
-        run: |
-          try {
-            $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=WorkBuddy Studio, O=WorkBuddy Studio, C=CN" -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -CertStoreLocation "Cert:\LocalMachine\My" -NotAfter (Get-Date).AddYears(5)
-            $certPwd = ConvertTo-SecureString -String "workbuddy2026" -Force -AsPlainText
-            $pfxPath = Join-Path (Get-Location).Path "workbuddy-cert.pfx"
-            Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $certPwd | Out-Null
-            if (Test-Path $pfxPath) {
-              $env:CSC_LINK = $pfxPath
-              $env:CSC_KEY_PASSWORD = "workbuddy2026"
-              Write-Host "Authenticode certificate generated at $pfxPath"
-            }
-          } catch {
-            Write-Warning "Skipping self-signed certificate generation: $_"
-          }
-          npx electron-builder --win --x64 --publish never
+      - name: Package Windows (.exe)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npx electron-builder --win --publish never
 
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
@@ -60,7 +47,6 @@ jobs:
           name: windows-exe
           path: |
             release/*.exe
-            release/*.zip
 
   build-macos:
     name: Build macOS (Intel x64 & Apple Silicon arm64)
@@ -77,15 +63,16 @@ jobs:
       - name: Install Dependencies
         run: |
           npm install --legacy-peer-deps
-          npm install --legacy-peer-deps -D electron electron-builder
+          npm install --legacy-peer-deps -D electron@33.2.1 electron-builder@25.1.8
 
       - name: Build Web Dist
-        run: |
-          npm run build
+        run: npm run build
 
       - name: Package macOS Intel (x64) and Apple Silicon (arm64)
-        run: |
-          npx electron-builder --mac --x64 --arm64 --publish never
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npx electron-builder --mac --x64 --arm64 --publish never
 
       - name: Upload macOS Artifacts
         uses: actions/upload-artifact@v4
@@ -124,7 +111,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name || inputs.version || 'v1.2.0' }}
-          name: WorkBuddy 账号日常工具 ${{ github.ref_name || inputs.version || 'v1.2.0' }}
+          name: WorkBuddy 账号日常工具 ${{ github.ref_name || inputs.version || 'v1.2.0' }} 正式发布
           files: |
             dist-release/*.exe
             dist-release/*.dmg
@@ -134,18 +121,18 @@ jobs:
           body: |
             ### 🌟 WorkBuddy 账号日常工具 v1.2.0 正式发布
 
-            本版本新增 13 项成长中心任务执行与快捷完成助手、单任务完成后实时调官方接口刷新积分、GitHub 版本升级管理及纯净无外层滚动的桌面端 UI 布局：
+            本版本同步采用 `kuaixuntong` 同款无自签名污染 NSIS 打包方案与多节点流式更新器，并新增 13 项成长中心任务执行助手、单任务完成后实时调官方接口刷新积分及纯净无外层滚动的桌面端 UI 布局：
 
             #### 🚀 核心升级内容
-            1. **13 项未完成任务专属自动触发 + 快捷完成助手**：
+            1. **采用 `kuaixuntong` 同款打包与流式直装方案（解决 Windows 伪自签名根证书拦截）**：
+               - 移除会导致 Windows 报 `TRUST_E_UNTRUSTEDROOT` 伪造根证书拦截的自签名逻辑，采用与 `kuaixuntong` 完全一致的 `electron@33.2.1` + `electron-builder@25.1.8` 标准 NSIS 安装向导（`workbuddyTools-Setup-1.2.0.exe`）；
+               - 内置 `kuaixuntong` 同款多源 CDN 加速流式下载器（`GHFast` / `GH-Proxy` / `GitHub直连`），直接通过 Node.js `fs.createWriteStream` 写入临时目录并调用 `shell.openPath` 启动安装，不产生浏览器 `Zone.Identifier` 联网标记。
+            2. **13 项未完成任务专属自动触发 + 快捷完成助手**：
                - 覆盖专家对话类（无畏契约拼豆专家、中国电商运营专家、抖音策略师、商家宣传页与海报设计师、直播电商教练、召唤 5 次专家联动）、专家团（3次）、模板（5个）、自动化任务、探索优秀灵感 (PC)、体验「发现应用」、分享技能给好友、关注官方公众号 (满24h)；
-               - 支持自动携带 `WorkBuddy/5.9.0` 桌面端标识上报任务进度与领奖，并在每一行任务右侧提供 **「辅助完成」** 按钮（一键复制专家名/提问词 + 直达官方任务页 + 立即领奖）。
-            2. **每完成一个任务实时调用官方接口刷新积分**：
-               - 彻底移除本地积分估算，每完成/领取一项任务后立即调用 `/billing/meter/get-user-resource-summary` 接口从服务端拉取最新 `TotalCredits`。
-            3. **内置版本升级管理（小红点提醒 + 自动匹配当前系统安装包下载）**：
-               - 自动比对本地版本与 GitHub Releases 最新版本，发现新版本时展示小红点与 GitHub 升级文案；
-               - 自动识别当前系统环境（Windows x64 / macOS Apple Silicon M芯片 arm64 / macOS Intel x64），点击「立即更新」自动下载对应架构的安装包。
+               - 支持自动携带 `WorkBuddy/5.9.0` 桌面端标识上报任务进度与领奖，并在每一行任务右侧提供 **「辅助完成」** 按钮。
+            3. **每完成一个任务实时调用官方接口刷新积分**：
+               - 每完成/领取一项任务后立即调用 `/billing/meter/get-user-resource-summary` 接口从服务端拉取最新 `TotalCredits`。
             4. **桌面端纯净固定视口 UI（消除鼠标上下整页滚动）**：
-               - 打包后仅保留核心工作台区域，采用 `100vh` 固定视口与内部独立滚动区，窗口尺寸优化为 `1200x780`。
+               - 打包后仅保留核心工作台区域，采用 `100vh` 固定视口与内部独立滚动区。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

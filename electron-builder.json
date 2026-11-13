@@ -1,69 +1,62 @@
 {
-  "appId": "com.workbuddy.tools",
+  "appId": "cn.antigravity.workbuddytools",
   "productName": "WorkBuddy 账号日常工具",
-  "copyright": "Copyright © 2026 WorkBuddy Studio. All rights reserved.",
+  "copyright": "Copyright © 2026",
   "directories": {
     "output": "release"
   },
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "dengwka",
+      "repo": "workBuddyTools"
+    }
+  ],
   "files": [
     "dist/**/*",
     "electron/**/*",
     "package.json"
   ],
   "win": {
-    "icon": "electron/icons/icon.ico",
-    "requestedExecutionLevel": "asInvoker",
-    "artifactName": "workbuddyTools-${version}-win-${arch}.${ext}",
     "target": [
-      {
-        "target": "nsis",
-        "arch": ["x64"]
-      },
-      {
-        "target": "portable",
-        "arch": ["x64"]
-      },
-      {
-        "target": "zip",
-        "arch": ["x64"]
-      }
-    ]
+      "nsis"
+    ],
+    "icon": "electron/icons/icon.ico",
+    "artifactName": "workbuddyTools-Setup-${version}.${ext}"
   },
   "nsis": {
     "oneClick": false,
-    "perMachine": false,
-    "allowElevation": false,
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
     "shortcutName": "WorkBuddy 账号日常工具",
-    "installerIcon": "electron/icons/icon.ico",
-    "uninstallerIcon": "electron/icons/icon.ico",
-    "installerHeaderIcon": "electron/icons/icon.ico",
-    "artifactName": "workbuddyTools-${version}-win-${arch}-setup.${ext}"
-  },
-  "portable": {
-    "artifactName": "workbuddyTools-${version}-win-${arch}-portable.${ext}"
+    "artifactName": "workbuddyTools-Setup-${version}.${ext}",
+    "deleteAppDataOnUninstall": false
   },
   "mac": {
-    "icon": "electron/icons/icon.png",
-    "artifactName": "workbuddyTools-${version}-mac-${arch}.${ext}",
+    "identity": null,
     "target": [
       {
         "target": "dmg",
-        "arch": ["x64", "arm64"]
+        "arch": [
+          "arm64",
+          "x64"
+        ]
       },
       {
         "target": "zip",
-        "arch": ["x64", "arm64"]
+        "arch": [
+          "arm64",
+          "x64"
+        ]
       }
     ],
+    "icon": "electron/icons/icon.png",
     "category": "public.app-category.utilities",
-    "hardenedRuntime": false,
-    "gatekeeperAssess": false
+    "artifactName": "workbuddyTools-${version}-${arch}.${ext}"
   },
   "dmg": {
-    "icon": "electron/icons/icon.png",
+    "artifactName": "workbuddyTools-${version}-${arch}.${ext}",
     "contents": [
       {
         "x": 130,

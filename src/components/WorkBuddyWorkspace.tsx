@@ -21,11 +21,19 @@ import {
   AlertTriangle,
   ArrowUpCircle,
   Wrench,
+  QrCode,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 import { WorkBuddyAccount, WorkBuddyTask, ExecutionLog, SystemExecutionStats } from '../types/workbuddy';
 import { INITIAL_ACCOUNTS } from '../utils/initialData';
 import { automationEngine } from '../utils/automationEngine';
-import { workbuddyRealApi, WorkBuddyRawTask, mapRawTaskToWorkBuddyTask } from '../utils/workbuddyRealApi';
+import {
+  workbuddyRealApi,
+  WorkBuddyRawTask,
+  mapRawTaskToWorkBuddyTask,
+  sanitizeTaskProgress,
+} from '../utils/workbuddyRealApi';
 import { AddAccountModal } from './AddAccountModal';
 import { AccountEditModal } from './AccountEditModal';
 import {
@@ -41,11 +49,21 @@ export interface WorkBuddyWorkspaceProps {
 }
 
 export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
-  // Accounts state with localStorage persistence
+  // Accounts state with localStorage persistence + NaN progress sanitization
   const [accounts, setAccounts] = useState<WorkBuddyAccount[]>(() => {
     try {
       const saved = localStorage.getItem('workbuddy_accounts_data_v2');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved) as WorkBuddyAccount[];
+        if (Array.isArray(parsed)) {
+          return parsed.map((acc) => ({
+            ...acc,
+            tasks: Array.isArray(acc.tasks)
+              ? acc.tasks.map((t) => sanitizeTaskProgress(t))
+              : [],
+          }));
+        }
+      }
     } catch {
       // fallback
     }
@@ -104,6 +122,34 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   const [copiedDetail, setCopiedDetail] = useState(false);
   const [isVersionModalOpen, setIsVersionModalOpen] = useState(false);
   const [assistingTask, setAssistingTask] = useState<WorkBuddyTask | null>(null);
+  const [executingTaskId, setExecutingTaskId] = useState<string | null>(null);
+
+  // Collapsible & Draggable Log Console (Closed by default per user requirement)
+  const [isLogOpen, setIsLogOpen] = useState(false);
+  const [logHeight, setLogHeight] = useState(145);
+
+  const handleStartResizeLog = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = logHeight;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const deltaY = startY - moveEvent.clientY;
+      const nextHeight = Math.min(Math.max(startHeight + deltaY, 64), 420);
+      setLogHeight(nextHeight);
+      if (!isLogOpen && deltaY > 10) {
+        setIsLogOpen(true);
+      }
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  };
 
   // Version Updater Hook (checks local version vs GitHub Releases)
   const {
@@ -1028,8 +1074,11 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                   </div>
 
                   <div className="flex-1 min-h-0 divide-y divide-slate-800/40 overflow-y-auto">
-                    {displayedTasks.map((task) => {
+                    {displayedTasks.map((rawTask) => {
+                      const task = sanitizeTaskProgress(rawTask);
                       const isSelected = selectedTaskId === task.id;
+                      const isWeChatTask = task.name.includes('公众号');
+                      const isRowExecuting = executingTaskId === task.id;
 
                       return (
                         <div
@@ -1047,7 +1096,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                           </span>
                           <span className="col-span-1">
                             <span
-                              className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${
                                 task.status === '已领奖'
                                   ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                                   : task.status === '需等待'
@@ -1063,7 +1112,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                           <span className="col-span-1 font-mono text-[11px] text-slate-400">
                             {task.currentProgress}/{task.targetProgress}
                           </span>
-                          <span className="col-span-1 font-mono text-[11px] text-emerald-400">
+                          <span className="col-span-1 font-mono text-[11px] text-emerald-400 whitespace-nowrap">
                             {task.reward} 分
                           </span>
                           <span className="col-span-2 text-[11px] text-slate-400 truncate pr-2" title={task.recentResult}>
@@ -1075,18 +1124,44 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                           <div className="col-span-1 text-right">
                             <button
                               type="button"
-                              onClick={(e) => {
+                              disabled={isRowExecuting}
+                              onClick={async (e) => {
                                 e.stopPropagation();
                                 setSelectedTaskId(task.id);
-                                setAssistingTask(task);
+                                if (isWeChatTask || task.status === '已领奖') {
+                                  setAssistingTask(task);
+                                  return;
+                                }
+                                setExecutingTaskId(task.id);
+                                try {
+                                  await handleExecuteAndClaimSingleTask(task);
+                                } finally {
+                                  setExecutingTaskId(null);
+                                }
                               }}
-                              className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer ${
+                              className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer whitespace-nowrap inline-flex items-center gap-1 ${
                                 task.status === '已领奖'
                                   ? 'bg-slate-800/70 text-slate-400 hover:text-slate-200'
+                                  : isWeChatTask
+                                  ? 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30'
                                   : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30'
                               }`}
                             >
-                              {task.status === '已领奖' ? '详情' : '辅助完成'}
+                              {isRowExecuting ? (
+                                <>
+                                  <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                                  <span>执行中</span>
+                                </>
+                              ) : task.status === '已领奖' ? (
+                                <span>详情</span>
+                              ) : isWeChatTask ? (
+                                <>
+                                  <QrCode className="w-2.5 h-2.5" />
+                                  <span>扫码关注</span>
+                                </>
+                              ) : (
+                                <span>一键完成</span>
+                              )}
                             </button>
                           </div>
                         </div>
@@ -1142,11 +1217,11 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
             </div>
           )}
 
-          {/* 4. Bottom Execution Toolbar */}
-          <div className="shrink-0 pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2">
+          {/* 4. Bottom Execution Toolbar (Single-line nowrap guaranteed) */}
+          <div className="shrink-0 pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2 overflow-x-auto">
             {/* Left radio scope options */}
-            <div className="flex items-center gap-3 text-xs text-slate-300">
-              <label className="inline-flex items-center gap-1.5 cursor-pointer">
+            <div className="flex items-center gap-2.5 text-xs text-slate-300 shrink-0 whitespace-nowrap">
+              <label className="inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0">
                 <input
                   type="radio"
                   name="executionScope"
@@ -1156,7 +1231,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                 />
                 <span>全部账号</span>
               </label>
-              <label className="inline-flex items-center gap-1.5 cursor-pointer">
+              <label className="inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0">
                 <input
                   type="radio"
                   name="executionScope"
@@ -1166,53 +1241,55 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                 />
                 <span>所选账号 ({selectedAccountIds.length})</span>
               </label>
-              <span className="text-[11px] text-slate-500 font-mono ml-2">{runningStatusText}</span>
+              <span className="text-[11px] text-slate-400 font-mono ml-1 whitespace-nowrap truncate max-w-[160px]" title={runningStatusText}>
+                {runningStatusText}
+              </span>
             </div>
 
             {/* Action buttons */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 shrink-0 whitespace-nowrap">
               <button
                 onClick={handleExecuteAllDaily}
                 disabled={isRunning}
-                className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs rounded-lg shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer"
+                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs rounded-lg shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer whitespace-nowrap shrink-0"
               >
-                {isRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+                {isRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" /> : <Play className="w-3.5 h-3.5 fill-current shrink-0" />}
                 <span>一键执行全部日常</span>
               </button>
 
               <button
                 onClick={handleExecuteStreak}
                 disabled={isRunning}
-                className="px-3 py-1.5 bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-medium rounded-lg shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer"
+                className="px-2.5 py-1.5 bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-medium rounded-lg shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer whitespace-nowrap shrink-0"
               >
-                <CalendarCheck className="w-3.5 h-3.5" />
+                <CalendarCheck className="w-3.5 h-3.5 shrink-0" />
                 <span>签到 / 每日活跃</span>
               </button>
 
               <button
                 onClick={handleExecuteCatTravel}
                 disabled={isRunning}
-                className="px-3 py-1.5 bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-medium rounded-lg shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer"
+                className="px-2.5 py-1.5 bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-medium rounded-lg shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer whitespace-nowrap shrink-0"
               >
-                <Compass className="w-3.5 h-3.5" />
+                <Compass className="w-3.5 h-3.5 shrink-0" />
                 <span>一键猫猫旅行</span>
               </button>
 
               <button
                 onClick={handleClaimCompletedTasks}
                 disabled={isRunning}
-                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-lg border border-slate-700 transition-colors disabled:opacity-40 cursor-pointer flex items-center gap-1.5"
+                className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-lg border border-slate-700 transition-colors disabled:opacity-40 cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0"
               >
-                <Gift className="w-3.5 h-3.5 text-amber-400" />
+                <Gift className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                 <span>完成任务并领奖</span>
               </button>
 
               {isRunning && (
                 <button
                   onClick={handleCancelExecution}
-                  className="px-2.5 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 text-xs rounded-lg border border-rose-500/30 transition-colors cursor-pointer"
+                  className="px-2.5 py-1.5 bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 text-xs rounded-lg border border-rose-500/30 transition-colors cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
                 >
-                  <XCircle className="w-3.5 h-3.5 inline mr-1" />
+                  <XCircle className="w-3.5 h-3.5 shrink-0" />
                   <span>取消</span>
                 </button>
               )}
@@ -1221,41 +1298,80 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
         </div>
       </div>
 
-      {/* 5. Bottom Logs Drawer (Fixed Compact Height, Scrolls Internally) */}
-      <div className="shrink-0 h-28 bg-slate-950 border-t border-slate-800 flex flex-col overflow-hidden">
-        <div className="shrink-0 px-4 py-1 border-b border-slate-800/80 flex items-center justify-between text-[11px] font-mono text-slate-400">
-          <div className="truncate">
-            <span>日志 · 最近：</span>
-            <span className="text-slate-200 ml-1">{logs[0]?.message || '等待任务开始...'}</span>
-          </div>
-          <button
-            onClick={() => setLogs([])}
-            className="text-slate-500 hover:text-slate-300 transition-colors cursor-pointer shrink-0 ml-2"
-          >
-            清空
-          </button>
+      {/* 5. Bottom Logs Drawer (Closed by Default, Manually Resizable via Top Drag Bar) */}
+      <div
+        style={{ height: isLogOpen ? `${logHeight}px` : '28px' }}
+        className="shrink-0 bg-slate-950 border-t border-slate-800 flex flex-col overflow-hidden transition-[height] duration-75"
+      >
+        {/* Top Drag Handle for Manual Height Resizing */}
+        <div
+          onMouseDown={handleStartResizeLog}
+          title="上下拖动可自由调节日志控制台高度"
+          className="h-1.5 w-full cursor-ns-resize bg-slate-900 hover:bg-emerald-500/40 transition-colors flex items-center justify-center shrink-0"
+        >
+          <div className="w-8 h-0.5 rounded-full bg-slate-700" />
         </div>
 
-        <div className="flex-1 min-h-0 px-4 py-1.5 overflow-y-auto font-mono text-[11px] space-y-1">
-          {logs.map((log) => (
-            <div key={log.id} className="flex items-start gap-2 leading-relaxed">
-              <span className="text-slate-600 shrink-0">{log.timestamp}</span>
-              <span
-                className={
-                  log.level === 'success'
-                    ? 'text-emerald-400'
-                    : log.level === 'warn'
-                    ? 'text-amber-400'
-                    : log.level === 'error'
-                    ? 'text-rose-400'
-                    : 'text-slate-300'
-                }
+        {/* Log Header Bar */}
+        <div
+          onClick={() => setIsLogOpen((prev) => !prev)}
+          className="shrink-0 px-4 py-0.5 border-b border-slate-800/80 flex items-center justify-between text-[11px] font-mono text-slate-400 cursor-pointer hover:bg-slate-900/60 select-none"
+        >
+          <div className="truncate flex items-center gap-2">
+            <span className="text-emerald-400 font-semibold">日志控制台 ({logs.length})</span>
+            <span className="text-slate-600">|</span>
+            <span className="text-slate-200 truncate">{logs[0]?.message || '等待任务开始...'}</span>
+          </div>
+          <div className="flex items-center gap-3 shrink-0 ml-2">
+            {isLogOpen && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setLogs([]);
+                }}
+                className="text-slate-500 hover:text-slate-300 transition-colors cursor-pointer"
               >
-                {log.message}
-              </span>
-            </div>
-          ))}
+                清空
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsLogOpen((prev) => !prev);
+              }}
+              className="text-slate-400 hover:text-emerald-400 flex items-center gap-1 cursor-pointer"
+            >
+              <span>{isLogOpen ? '收起' : '展开'}</span>
+              {isLogOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+            </button>
+          </div>
         </div>
+
+        {/* Log Content Body */}
+        {isLogOpen && (
+          <div className="flex-1 min-h-0 px-4 py-1.5 overflow-y-auto font-mono text-[11px] space-y-1">
+            {logs.map((log) => (
+              <div key={log.id} className="flex items-start gap-2 leading-relaxed">
+                <span className="text-slate-600 shrink-0">{log.timestamp}</span>
+                <span
+                  className={
+                    log.level === 'success'
+                      ? 'text-emerald-400'
+                      : log.level === 'warn'
+                      ? 'text-amber-400'
+                      : log.level === 'error'
+                      ? 'text-rose-400'
+                      : 'text-slate-300'
+                  }
+                >
+                  {log.message}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Add Account Modal */}

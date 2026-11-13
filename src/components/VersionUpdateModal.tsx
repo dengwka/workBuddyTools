@@ -6,11 +6,12 @@ import {
   Sparkles,
   CheckCircle2,
   Cpu,
-  Monitor,
   ExternalLink,
   ArrowUpCircle,
   Package,
   ShieldCheck,
+  Loader2,
+  Zap,
 } from 'lucide-react';
 
 export const CURRENT_APP_VERSION = '1.2.0';
@@ -39,8 +40,15 @@ export interface DetectedSystemEnv {
   envType: SystemEnvType;
   label: string;
   shortLabel: string;
-  recommendedSuffix: string;
-  backupSuffix: string;
+}
+
+export interface UpdateProgressData {
+  percent: number;
+  receivedMb: string;
+  totalMb: string;
+  speedText: string;
+  remainingText: string;
+  nodeName: string;
 }
 
 export function compareSemver(v1: string, v2: string): number {
@@ -64,38 +72,41 @@ export async function detectSystemEnvironment(): Promise<DetectedSystemEnv> {
       platform?: string;
       arch?: string;
       isElectron?: boolean;
+      getSystemInfo?: () => Promise<{
+        envType?: SystemEnvType;
+        summary?: string;
+        arch?: string;
+        isMac?: boolean;
+      }>;
     };
   };
 
-  // 1. Exact native detection inside Electron desktop runtime
-  if (winAny.electronAPI?.platform) {
-    const p = winAny.electronAPI.platform;
-    const arch = winAny.electronAPI.arch || 'x64';
-    if (p === 'darwin') {
-      if (arch === 'arm64') {
+  // 1. Native Rosetta-aware detection via Electron IPC (kuaixuntong scheme)
+  if (winAny.electronAPI?.getSystemInfo) {
+    try {
+      const info = await winAny.electronAPI.getSystemInfo();
+      if (info?.envType === 'mac-arm64') {
         return {
           envType: 'mac-arm64',
           label: 'macOS (Apple Silicon M系列芯片 · arm64)',
           shortLabel: 'macOS M芯片 (arm64)',
-          recommendedSuffix: 'mac-arm64.dmg',
-          backupSuffix: 'mac-arm64.zip',
+        };
+      }
+      if (info?.envType === 'mac-x64') {
+        return {
+          envType: 'mac-x64',
+          label: 'macOS (Intel 处理器 · x64)',
+          shortLabel: 'macOS Intel (x64)',
         };
       }
       return {
-        envType: 'mac-x64',
-        label: 'macOS (Intel 处理器 · x64)',
-        shortLabel: 'macOS Intel (x64)',
-        recommendedSuffix: 'mac-x64.dmg',
-        backupSuffix: 'mac-x64.zip',
+        envType: 'win-x64',
+        label: 'Windows 64位系统 (x64)',
+        shortLabel: 'Windows (x64)',
       };
+    } catch {
+      // fallback
     }
-    return {
-      envType: 'win-x64',
-      label: 'Windows 64位系统 (x64)',
-      shortLabel: 'Windows (x64)',
-      recommendedSuffix: 'win-x64-setup.exe',
-      backupSuffix: 'win-x64-portable.exe',
-    };
   }
 
   // 2. Browser high-entropy & WebGL detection fallback
@@ -140,8 +151,6 @@ export async function detectSystemEnvironment(): Promise<DetectedSystemEnv> {
         envType: 'mac-arm64',
         label: 'macOS (Apple Silicon M系列芯片 · arm64)',
         shortLabel: 'macOS M芯片 (arm64)',
-        recommendedSuffix: 'mac-arm64.dmg',
-        backupSuffix: 'mac-arm64.zip',
       };
     }
 
@@ -149,8 +158,6 @@ export async function detectSystemEnvironment(): Promise<DetectedSystemEnv> {
       envType: 'mac-x64',
       label: 'macOS (Intel 处理器 · x64)',
       shortLabel: 'macOS Intel (x64)',
-      recommendedSuffix: 'mac-x64.dmg',
-      backupSuffix: 'mac-x64.zip',
     };
   }
 
@@ -158,35 +165,57 @@ export async function detectSystemEnvironment(): Promise<DetectedSystemEnv> {
     envType: 'win-x64',
     label: 'Windows 64位系统 (x64)',
     shortLabel: 'Windows (x64)',
-    recommendedSuffix: 'win-x64-setup.exe',
-    backupSuffix: 'win-x64-portable.exe',
   };
 }
 
 export function findMatchingAsset(
   release: GitHubReleaseInfo | null,
   env: DetectedSystemEnv
-): { primaryUrl: string; primaryName: string; primarySizeMb?: string; backupUrl?: string; backupName?: string } {
+): { primaryUrl: string; primaryName: string; primarySizeMb?: string } {
   const versionClean = (release?.tag_name || `v${CURRENT_APP_VERSION}`).replace(/^v/i, '');
   const tag = release?.tag_name || `v${CURRENT_APP_VERSION}`;
   const assets = release?.assets || [];
 
-  // Match from real GitHub Release assets list first
-  const primaryAsset = assets.find((a) => a.name.toLowerCase().endsWith(env.recommendedSuffix.toLowerCase()));
-  const backupAsset = assets.find((a) => a.name.toLowerCase().endsWith(env.backupSuffix.toLowerCase()));
+  let matchedAsset: GitHubReleaseAsset | undefined;
 
-  const fallbackPrimaryName = `workbuddyTools-${versionClean}-${env.recommendedSuffix}`;
-  const fallbackPrimaryUrl = `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${fallbackPrimaryName}`;
+  if (env.envType === 'win-x64') {
+    matchedAsset =
+      assets.find((a) => a.name.toLowerCase().includes('setup') && a.name.endsWith('.exe')) ||
+      assets.find((a) => a.name.endsWith('.exe'));
+    const fallbackName = `workbuddyTools-Setup-${versionClean}.exe`;
+    return {
+      primaryUrl:
+        matchedAsset?.browser_download_url ||
+        `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${fallbackName}`,
+      primaryName: matchedAsset?.name || fallbackName,
+      primarySizeMb: matchedAsset ? `${(matchedAsset.size / 1024 / 1024).toFixed(1)} MB` : undefined,
+    };
+  }
 
-  const fallbackBackupName = `workbuddyTools-${versionClean}-${env.backupSuffix}`;
-  const fallbackBackupUrl = `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${fallbackBackupName}`;
+  if (env.envType === 'mac-arm64') {
+    matchedAsset =
+      assets.find((a) => a.name.endsWith('.dmg') && a.name.includes('arm64')) ||
+      assets.find((a) => a.name.endsWith('.zip') && a.name.includes('arm64'));
+    const fallbackName = `workbuddyTools-${versionClean}-arm64.dmg`;
+    return {
+      primaryUrl:
+        matchedAsset?.browser_download_url ||
+        `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${fallbackName}`,
+      primaryName: matchedAsset?.name || fallbackName,
+      primarySizeMb: matchedAsset ? `${(matchedAsset.size / 1024 / 1024).toFixed(1)} MB` : undefined,
+    };
+  }
 
+  matchedAsset =
+    assets.find((a) => a.name.endsWith('.dmg') && a.name.includes('x64')) ||
+    assets.find((a) => a.name.endsWith('.zip') && a.name.includes('x64'));
+  const fallbackName = `workbuddyTools-${versionClean}-x64.dmg`;
   return {
-    primaryUrl: primaryAsset?.browser_download_url || fallbackPrimaryUrl,
-    primaryName: primaryAsset?.name || fallbackPrimaryName,
-    primarySizeMb: primaryAsset ? `${(primaryAsset.size / 1024 / 1024).toFixed(1)} MB` : undefined,
-    backupUrl: backupAsset?.browser_download_url || fallbackBackupUrl,
-    backupName: backupAsset?.name || fallbackBackupName,
+    primaryUrl:
+      matchedAsset?.browser_download_url ||
+      `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${fallbackName}`,
+    primaryName: matchedAsset?.name || fallbackName,
+    primarySizeMb: matchedAsset ? `${(matchedAsset.size / 1024 / 1024).toFixed(1)} MB` : undefined,
   };
 }
 
@@ -217,8 +246,6 @@ export function useVersionUpdater(localVersion: string = CURRENT_APP_VERSION) {
     envType: 'win-x64',
     label: 'Windows 64位系统 (x64)',
     shortLabel: 'Windows (x64)',
-    recommendedSuffix: 'win-x64-setup.exe',
-    backupSuffix: 'win-x64-portable.exe',
   });
   const [lastCheckedAt, setLastCheckedAt] = useState<string>('');
 
@@ -280,22 +307,16 @@ const ENV_OPTIONS: DetectedSystemEnv[] = [
     envType: 'win-x64',
     label: 'Windows 64位系统 (x64)',
     shortLabel: 'Windows (x64)',
-    recommendedSuffix: 'win-x64-setup.exe',
-    backupSuffix: 'win-x64-portable.exe',
   },
   {
     envType: 'mac-arm64',
     label: 'macOS (Apple Silicon M系列芯片 · arm64)',
     shortLabel: 'macOS M芯片 (arm64)',
-    recommendedSuffix: 'mac-arm64.dmg',
-    backupSuffix: 'mac-arm64.zip',
   },
   {
     envType: 'mac-x64',
     label: 'macOS (Intel 处理器 · x64)',
     shortLabel: 'macOS Intel (x64)',
-    recommendedSuffix: 'mac-x64.dmg',
-    backupSuffix: 'mac-x64.zip',
   },
 ];
 
@@ -310,7 +331,24 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
   onCheckUpdate,
   onChangeEnv,
 }) => {
-  const [downloadTriggered, setDownloadTriggered] = useState<string | null>(null);
+  const [mirrorMode, setMirrorMode] = useState<'auto' | 'ghfast' | 'ghproxy' | 'official'>('auto');
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [progress, setProgress] = useState<UpdateProgressData | null>(null);
+  const [statusMessage, setStatusMessage] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    const winAny = window as unknown as {
+      electronAPI?: {
+        onUpdateProgress?: (cb: (data: UpdateProgressData) => void) => () => void;
+      };
+    };
+    if (winAny.electronAPI?.onUpdateProgress) {
+      const unsubscribe = winAny.electronAPI.onUpdateProgress((data) => {
+        setProgress(data);
+      });
+      return unsubscribe;
+    }
+  }, []);
 
   if (!isOpen) return null;
 
@@ -319,12 +357,68 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
 
   const defaultReleaseNotes =
     release?.body?.trim() ||
-    `### v${localVersion} 更新说明\n- 新增 13 项成长中心任务自动执行与半自动快捷完成助手\n- 每完成一项任务实时调用官方接口刷新最新积分\n- 新增 GitHub 版本升级检测、小红点提醒及自动匹配当前系统安装包下载\n- 桌面端固定无滚动视口布局，优化窗口尺寸体验\n- 完整保留 cURL 请求头并自动补全国内版 copilot 认证域`;
+    `### v${localVersion} 更新说明\n- 采用 kuaixuntong 同款无自签名污染 NSIS 打包与流式直装方案，避免浏览器下载标记导致 SmartScreen 蓝框拦截\n- 新增 13 项成长中心任务自动触发与快捷完成助手\n- 每完成一项任务实时调用官方接口刷新最新积分\n- 底部日志控制台默认收起并支持鼠标上下拖拽调节高度，消除底部按钮换行`;
 
-  const handleDownload = (url: string, fileName: string) => {
-    setDownloadTriggered(fileName);
-    triggerExternalDownload(url);
-    setTimeout(() => setDownloadTriggered(null), 4000);
+  const handleSmartDownload = async () => {
+    setStatusMessage(null);
+    const winAny = window as unknown as {
+      electronAPI?: {
+        isElectron?: boolean;
+        downloadAndInstallUpdate?: (payload: {
+          downloadUrl: string;
+          mirrorMode: string;
+        }) => Promise<{ success: boolean; filePath?: string; nodeName?: string; error?: string }>;
+      };
+    };
+
+    // In Electron Desktop App: use kuaixuntong's Node.js stream download + shell.openPath (no browser Zone.Identifier!)
+    if (winAny.electronAPI?.isElectron && typeof winAny.electronAPI.downloadAndInstallUpdate === 'function') {
+      setIsDownloading(true);
+      setProgress({
+        percent: 0,
+        receivedMb: '0.0',
+        totalMb: '0.0',
+        speedText: '正在连接高速节点...',
+        remainingText: '',
+        nodeName: '智能加速引擎',
+      });
+      try {
+        const res = await winAny.electronAPI.downloadAndInstallUpdate({
+          downloadUrl: matched.primaryUrl,
+          mirrorMode,
+        });
+        if (res.success) {
+          setStatusMessage({
+            ok: true,
+            text: `安装包已通过 [${res.nodeName}] 下载完成并自动拉起安装向导！（无浏览器联网标记，免拦截直装）`,
+          });
+        } else {
+          triggerExternalDownload(matched.primaryUrl);
+          setStatusMessage({
+            ok: true,
+            text: `已切换至系统浏览器下载：${matched.primaryName}`,
+          });
+        }
+      } catch {
+        triggerExternalDownload(matched.primaryUrl);
+      } finally {
+        setIsDownloading(false);
+      }
+      return;
+    }
+
+    // In Web Browser: use selected CDN mirror or direct GitHub URL
+    let finalUrl = matched.primaryUrl;
+    if (mirrorMode === 'ghfast' || mirrorMode === 'auto') {
+      finalUrl = `https://ghfast.top/${matched.primaryUrl}`;
+    } else if (mirrorMode === 'ghproxy') {
+      finalUrl = `https://gh-proxy.com/${matched.primaryUrl}`;
+    }
+    triggerExternalDownload(finalUrl);
+    setStatusMessage({
+      ok: true,
+      text: `已开始自动下载对应系统安装包：${matched.primaryName}`,
+    });
   };
 
   return (
@@ -353,7 +447,7 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
                   </span>
                 )}
               </div>
-              <p className="text-[11px] text-slate-400">自动比对本地与 GitHub Releases 最新版本，智能匹配当前系统安装包</p>
+              <p className="text-[11px] text-slate-400">内置多源 CDN 加速流式下载与自动启动安装（免浏览器安全拦截）</p>
             </div>
           </div>
 
@@ -366,7 +460,7 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
         </div>
 
         {/* Body */}
-        <div className="p-5 space-y-4 overflow-y-auto text-xs">
+        <div className="p-5 space-y-3.5 overflow-y-auto text-xs">
           {/* Version Comparison Strip */}
           <div className="grid grid-cols-2 gap-3">
             <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl flex items-center justify-between">
@@ -398,36 +492,55 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
           </div>
 
           {/* Detected OS & Architecture Box */}
-          <div className="p-3.5 bg-emerald-950/20 border border-emerald-500/30 rounded-xl space-y-2.5">
+          <div className="p-3 bg-emerald-950/20 border border-emerald-500/30 rounded-xl space-y-2">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-emerald-300 font-medium">
                 <Cpu className="w-4 h-4 text-emerald-400" />
-                <span>已自动识别您的系统环境：{systemEnv.label}</span>
+                <span>已自动识别系统环境：{systemEnv.label}</span>
               </div>
               <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
             </div>
 
-            {/* Environment Switcher (in case user wants to download for another machine) */}
-            <div className="flex items-center gap-1.5 pt-1">
-              <span className="text-[11px] text-slate-400 mr-1">切换目标环境:</span>
-              {ENV_OPTIONS.map((opt) => (
-                <button
-                  key={opt.envType}
-                  type="button"
-                  onClick={() => onChangeEnv(opt)}
-                  className={`px-2 py-1 rounded text-[11px] font-mono transition-colors cursor-pointer ${
-                    systemEnv.envType === opt.envType
-                      ? 'bg-emerald-600 text-white font-semibold'
-                      : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 border border-slate-700/70'
-                  }`}
-                >
-                  {opt.shortLabel}
-                </button>
-              ))}
+            <div className="flex items-center justify-between gap-2 pt-0.5">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] text-slate-400">目标环境:</span>
+                {ENV_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.envType}
+                    type="button"
+                    onClick={() => onChangeEnv(opt)}
+                    className={`px-2 py-0.5 rounded text-[11px] font-mono transition-colors cursor-pointer ${
+                      systemEnv.envType === opt.envType
+                        ? 'bg-emerald-600 text-white font-semibold'
+                        : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 border border-slate-700/70'
+                    }`}
+                  >
+                    {opt.shortLabel}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
-          {/* GitHub Release Notes (升级文案) */}
+          {/* Mirror Acceleration Node Selector (from kuaixuntong) */}
+          <div className="flex items-center justify-between px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl">
+            <span className="text-slate-300 flex items-center gap-1.5 text-[11px]">
+              <Zap className="w-3.5 h-3.5 text-amber-400" />
+              <span>下载加速源:</span>
+            </span>
+            <select
+              value={mirrorMode}
+              onChange={(e) => setMirrorMode(e.target.value as any)}
+              className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500 cursor-pointer"
+            >
+              <option value="auto">⚡ 智能多源自动切换 (推荐)</option>
+              <option value="ghfast">⚡ GHFast 国内高速镜像</option>
+              <option value="ghproxy">🚀 GH-Proxy 备用镜像</option>
+              <option value="official">🌐 GitHub 官方源 (直连)</option>
+            </select>
+          </div>
+
+          {/* GitHub Release Notes */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-slate-300 font-medium">
               <span className="flex items-center gap-1.5">
@@ -440,55 +553,79 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
                 </span>
               )}
             </div>
-            <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-xl text-slate-300 font-mono text-[11px] leading-relaxed whitespace-pre-wrap max-h-44 overflow-y-auto select-text">
+            <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl text-slate-300 font-mono text-[11px] leading-relaxed whitespace-pre-wrap max-h-36 overflow-y-auto select-text">
               {defaultReleaseNotes}
             </div>
           </div>
 
-          {/* Download Feedback Banner */}
-          {downloadTriggered && (
-            <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span>已开始自动下载对应系统安装包：{downloadTriggered}</span>
+          {/* Stream Download Progress Bar */}
+          {isDownloading && progress && (
+            <div className="p-3 bg-slate-950 border border-emerald-500/30 rounded-xl space-y-2">
+              <div className="flex items-center justify-between text-[11px] font-mono">
+                <span className="text-emerald-400">{progress.nodeName}</span>
+                <span className="text-slate-300">
+                  {progress.percent}% ({progress.receivedMb}/{progress.totalMb} MB) · {progress.speedText}{' '}
+                  {progress.remainingText}
+                </span>
+              </div>
+              <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-emerald-500 transition-all duration-200"
+                  style={{ width: `${Math.max(2, progress.percent)}%` }}
+                />
+              </div>
             </div>
           )}
 
-          {/* Primary & Backup Download Buttons */}
+          {/* Status Message */}
+          {statusMessage && (
+            <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              <span className="text-[11px] leading-relaxed">{statusMessage.text}</span>
+            </div>
+          )}
+
+          {/* Primary Download & Install Button */}
           <div className="space-y-2 pt-1">
             <button
               type="button"
-              onClick={() => handleDownload(matched.primaryUrl, matched.primaryName)}
-              className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-xl shadow-lg flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              onClick={handleSmartDownload}
+              disabled={isDownloading}
+              className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-xl shadow-lg flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-50"
             >
-              <Download className="w-4 h-4" />
+              {isDownloading ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4" />
+              )}
               <span>
-                {hasUpdate ? '立即更新并自动下载安装包' : '重新下载当前系统安装包'} ({matched.primaryName}
-                {matched.primarySizeMb ? ` · ${matched.primarySizeMb}` : ''})
+                {isDownloading
+                  ? '正在流式下载安装包并准备自动启动...'
+                  : `${hasUpdate ? '立即更新并自动下载安装包' : '下载当前系统安装包'} (${matched.primaryName}${
+                      matched.primarySizeMb ? ` · ${matched.primarySizeMb}` : ''
+                    })`}
               </span>
             </button>
 
-            {matched.backupUrl && matched.backupName && (
-              <div className="flex items-center justify-between px-1 text-[11px] text-slate-400">
-                <button
-                  type="button"
-                  onClick={() => handleDownload(matched.backupUrl!, matched.backupName!)}
-                  className="text-indigo-400 hover:text-indigo-300 underline cursor-pointer flex items-center gap-1"
-                >
-                  <Monitor className="w-3 h-3" />
-                  <span>下载免安装便携版 / 备用包 ({matched.backupName})</span>
-                </button>
+            <div className="flex items-center justify-between px-1 text-[11px] text-slate-400">
+              <button
+                type="button"
+                onClick={() => triggerExternalDownload(matched.primaryUrl)}
+                className="text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
+              >
+                通过浏览器直接下载 ({matched.primaryName})
+              </button>
 
-                <a
-                  href={`https://github.com/${GITHUB_REPO}/releases`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-slate-400 hover:text-slate-200 inline-flex items-center gap-1"
-                >
-                  <span>查看全部 GitHub Releases</span>
-                  <ExternalLink className="w-3 h-3" />
-                </a>
-              </div>
-            )}
+              <a
+                href={`https://github.com/${GITHUB_REPO}/releases`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-slate-400 hover:text-slate-200 inline-flex items-center gap-1"
+              >
+                <span>查看全部 GitHub Releases</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
           </div>
         </div>
       </div>

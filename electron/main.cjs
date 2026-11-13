@@ -1,6 +1,9 @@
-// Electron Main Process for WorkBuddy Tools
+// Electron Main Process for WorkBuddy Tools (with kuaixuntong-style Stream Updater & CORS Proxy)
 const { app, BrowserWindow, ipcMain, shell, Menu } = require('electron');
+const fs = require('fs');
 const path = require('path');
+
+let mainWindow = null;
 
 // Domain Cookie Jar (mirrors PostAPI Cookie Manager behavior for workbuddy.cn)
 const domainCookieJar = {
@@ -8,7 +11,232 @@ const domainCookieJar = {
   cb_login_realm: 'copilot',
 };
 
-// Native Node.js fetch proxy for WorkBuddy desktop app (bypasses browser CORS & enforces official headers)
+// Accurate OS & CPU chip architecture detection (including Rosetta 2 translation detection on Apple Silicon)
+function getSystemInfo() {
+  const platform = process.platform;
+  const isWin = platform === 'win32';
+  const isMac = platform === 'darwin';
+  let arch = process.arch; // 'arm64' or 'x64'
+
+  if (isMac && arch === 'x64') {
+    try {
+      const { execSync } = require('child_process');
+      const translated = execSync('sysctl -in sysctl.proc_translated', { timeout: 1000 }).toString().trim();
+      if (translated === '1') {
+        arch = 'arm64';
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  let archName = 'x64 (64位)';
+  let platformName = 'Windows';
+  let envType = 'win-x64';
+
+  if (isWin) {
+    platformName = 'Windows';
+    archName = 'x64 (64位)';
+    envType = 'win-x64';
+  } else if (isMac) {
+    platformName = 'macOS';
+    archName = arch === 'arm64' ? 'Apple Silicon (M系列芯片)' : 'Intel 芯片';
+    envType = arch === 'arm64' ? 'mac-arm64' : 'mac-x64';
+  }
+
+  return {
+    platform,
+    isWin,
+    isMac,
+    arch,
+    envType,
+    archName,
+    platformName,
+    summary: `${platformName} (${archName})`,
+  };
+}
+
+function getAcceleratedDownloadUrls(rawUrl, customNode = 'auto') {
+  const cleanRaw = String(rawUrl || '').trim();
+  if (!cleanRaw.includes('github.com')) {
+    return [{ url: cleanRaw, name: '直连源' }];
+  }
+  const mirrorFast = `https://ghfast.top/${cleanRaw}`;
+  const mirrorProxy = `https://gh-proxy.com/${cleanRaw}`;
+
+  if (customNode === 'ghfast') {
+    return [
+      { url: mirrorFast, name: '⚡ 智能高速镜像 (GHFast CDN)' },
+      { url: mirrorProxy, name: '🚀 国内备用镜像 (GH-Proxy CDN)' },
+      { url: cleanRaw, name: '🌐 GitHub 官方源 (直连)' },
+    ];
+  } else if (customNode === 'ghproxy') {
+    return [
+      { url: mirrorProxy, name: '🚀 国内备用镜像 (GH-Proxy CDN)' },
+      { url: mirrorFast, name: '⚡ 智能高速镜像 (GHFast CDN)' },
+      { url: cleanRaw, name: '🌐 GitHub 官方源 (直连)' },
+    ];
+  } else if (customNode === 'official') {
+    return [
+      { url: cleanRaw, name: '🌐 GitHub 官方源 (直连)' },
+      { url: mirrorFast, name: '⚡ 智能高速镜像 (GHFast CDN)' },
+    ];
+  }
+  return [
+    { url: mirrorFast, name: '⚡ 智能高速镜像 (GHFast CDN)' },
+    { url: mirrorProxy, name: '🚀 国内备用镜像 (GH-Proxy CDN)' },
+    { url: cleanRaw, name: '🌐 GitHub 官方源 (直连)' },
+  ];
+}
+
+async function executeStreamDownload(targetUrl, nodeName, emitProgress) {
+  const controller = new AbortController();
+  const connectTimer = setTimeout(() => controller.abort(), 15000);
+
+  let res;
+  try {
+    res = await fetch(targetUrl, {
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(connectTimer);
+  }
+
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}`);
+  }
+
+  const totalBytes = parseInt(res.headers.get('content-length') || '0', 10);
+  const isWin = process.platform === 'win32';
+  const isMac = process.platform === 'darwin';
+  const ext = isWin ? '.exe' : isMac ? '.dmg' : '';
+  const fileName = `workbuddyTools-Setup-${Date.now()}${ext}`;
+  const tempDir = app.getPath('temp');
+  const destPath = path.join(tempDir, fileName);
+
+  const destStream = fs.createWriteStream(destPath);
+  let receivedBytes = 0;
+  let lastReportTime = Date.now();
+  let lastReportBytes = 0;
+
+  const report = () => {
+    const now = Date.now();
+    const deltaSec = (now - lastReportTime) / 1000;
+    if (deltaSec >= 0.25 || (totalBytes > 0 && receivedBytes === totalBytes)) {
+      const deltaBytes = receivedBytes - lastReportBytes;
+      const bytesPerSec = deltaSec > 0 ? deltaBytes / deltaSec : 0;
+      const speedMb = (bytesPerSec / (1024 * 1024)).toFixed(1);
+      const remainingSec =
+        bytesPerSec > 0 && totalBytes > receivedBytes
+          ? Math.ceil((totalBytes - receivedBytes) / bytesPerSec)
+          : 0;
+      const percent =
+        totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
+
+      emitProgress({
+        percent,
+        receivedMb: (receivedBytes / (1024 * 1024)).toFixed(1),
+        totalMb: (totalBytes / (1024 * 1024)).toFixed(1),
+        speedText: `${speedMb} MB/s`,
+        remainingText: remainingSec > 0 ? `剩余约 ${remainingSec} 秒` : '',
+        nodeName,
+      });
+      lastReportTime = now;
+      lastReportBytes = receivedBytes;
+    }
+  };
+
+  try {
+    if (res.body && typeof res.body.getReader === 'function') {
+      const reader = res.body.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value && value.length > 0) {
+          receivedBytes += value.length;
+          const canContinue = destStream.write(Buffer.from(value));
+          if (!canContinue) {
+            await new Promise((r) => destStream.once('drain', r));
+          }
+          report();
+        }
+      }
+    }
+  } catch (err) {
+    destStream.destroy();
+    try {
+      fs.unlinkSync(destPath);
+    } catch {
+      // ignore
+    }
+    throw err;
+  }
+
+  await new Promise((resolve, reject) => {
+    destStream.on('close', resolve);
+    destStream.on('error', reject);
+    destStream.end();
+  });
+
+  const stat = fs.statSync(destPath);
+  if (totalBytes > 0 && stat.size !== totalBytes) {
+    try {
+      fs.unlinkSync(destPath);
+    } catch {
+      // ignore
+    }
+    throw new Error(`文件完整性校验未通过: 预期 ${totalBytes} 字节，实际 ${stat.size} 字节`);
+  }
+
+  await new Promise((r) => setTimeout(r, 400));
+  await shell.openPath(destPath);
+
+  return {
+    success: true,
+    filePath: destPath,
+    nodeName,
+  };
+}
+
+ipcMain.handle('workbuddy:get-system-info', () => {
+  return getSystemInfo();
+});
+
+ipcMain.handle('workbuddy:download-and-install', async (_event, { downloadUrl, mirrorMode = 'auto' }) => {
+  const candidates = getAcceleratedDownloadUrls(downloadUrl, mirrorMode);
+  const emitProgress = (progressData) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('workbuddy:update-progress', progressData);
+    }
+  };
+
+  let lastError = null;
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i];
+    if (i > 0) {
+      emitProgress({
+        percent: 0,
+        receivedMb: '0.0',
+        totalMb: '0.0',
+        speedText: '正在切换加速节点...',
+        remainingText: '',
+        nodeName: candidate.name,
+      });
+    }
+    try {
+      return await executeStreamDownload(candidate.url, candidate.name, emitProgress);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  return {
+    success: false,
+    error: lastError && lastError.message ? lastError.message : '下载未完成',
+  };
+});
+
+// Native Node.js fetch proxy for WorkBuddy desktop app
 ipcMain.handle('workbuddy:proxy', async (_event, { url, method = 'GET', headers = {}, body }) => {
   try {
     if (!url || !url.startsWith('https://www.workbuddy.cn')) {
@@ -132,17 +360,16 @@ ipcMain.handle('workbuddy:open-external', async (_event, targetUrl) => {
 });
 
 function createWindow() {
-  // Remove default ugly "File Edit View Window" menu bar on Windows/Linux
   if (process.platform !== 'darwin') {
     Menu.setApplicationMenu(null);
   }
 
   const iconFile = process.platform === 'win32' ? 'icons/icon.ico' : 'icons/icon.png';
 
-  const win = new BrowserWindow({
-    width: 1200,
+  mainWindow = new BrowserWindow({
+    width: 1220,
     height: 780,
-    minWidth: 1000,
+    minWidth: 1020,
     minHeight: 660,
     frame: true,
     autoHideMenuBar: true,
@@ -157,20 +384,18 @@ function createWindow() {
     },
   });
 
-  win.setMenuBarVisibility(false);
+  mainWindow.setMenuBarVisibility(false);
 
-  // Open external links in default browser
-  win.webContents.setWindowOpenHandler(({ url }) => {
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
   });
 
-  // In production load local dist/index.html, in dev load local dev server
   const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
   if (isDev && process.env.ELECTRON_DEV_URL) {
-    win.loadURL(process.env.ELECTRON_DEV_URL);
+    mainWindow.loadURL(process.env.ELECTRON_DEV_URL);
   } else {
-    win.loadFile(path.join(__dirname, '../dist/index.html'));
+    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 }
 

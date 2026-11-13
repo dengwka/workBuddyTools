@@ -11,8 +11,10 @@ import {
   CheckCircle2,
   AlertCircle,
   MessageSquare,
+  QrCode,
 } from 'lucide-react';
 import { WorkBuddyTask } from '../types/workbuddy';
+import { sanitizeTaskProgress } from '../utils/workbuddyRealApi';
 import { triggerExternalDownload } from './VersionUpdateModal';
 
 export interface TaskActionRecipe {
@@ -20,15 +22,33 @@ export interface TaskActionRecipe {
   expertKeyword?: string;
   samplePrompt?: string;
   targetUrl: string;
-  desktopProtocolUrl?: string;
+  growthCenterUrl: string;
   steps: string[];
   autoNote: string;
 }
 
 export function getTaskRecipe(task: WorkBuddyTask): TaskActionRecipe {
   const title = task.name || '';
+  const growthCenterUrl = 'https://www.workbuddy.cn/profile/growth-center';
+  const webWorkspaceUrl = 'https://www.workbuddy.cn/app';
 
-  // 1. Specific Expert Chat Tasks
+  // 1. Follow Official WeChat Account (24h) - Display Official QR Code Directly!
+  if (title.includes('公众号')) {
+    return {
+      category: 'wechat_24h',
+      expertKeyword: '腾讯 WorkBuddy',
+      targetUrl: 'https://www.workbuddy.cn/docs/workbuddy/Contact#%E5%AE%98%E6%96%B9%E5%85%AC%E4%BC%97%E5%8F%B7',
+      growthCenterUrl,
+      steps: [
+        '直接用手机微信扫描上方「腾讯 WorkBuddy」官方公众号二维码并点击关注',
+        '保持关注满 24 小时（切勿取关）',
+        '满 24 小时后，点击下方「同步关注状态并立即领奖」即可直接到账 100 积分',
+      ],
+      autoNote: '提示：点击下方按钮会自动调用 /v2/activity/growth/subscribe-task/status 同步微信关注时长并领奖。',
+    };
+  }
+
+  // 2. Specific Expert Chat Tasks
   const expertMatch = title.match(/体验「([^」]+)」/);
   if (expertMatch && !title.includes('发现应用')) {
     const expertName = expertMatch[1];
@@ -36,150 +56,127 @@ export function getTaskRecipe(task: WorkBuddyTask): TaskActionRecipe {
       category: 'expert_chat',
       expertKeyword: expertName,
       samplePrompt: `你好，我是通过成长中心前来体验「${expertName}」的，请简单介绍一下你的核心能力并给我一个示例方案。`,
-      targetUrl: 'https://www.workbuddy.cn/experts',
-      desktopProtocolUrl: 'workbuddy://',
+      targetUrl: webWorkspaceUrl,
+      growthCenterUrl,
       steps: [
-        `点击下方「一键复制专家名」，复制「${expertName}」`,
-        `前往 WorkBuddy「专家」页搜索「${expertName}」并点击召唤`,
-        `发送任意一句话（可一键复制下方示例提问），完成后点击下方「立即领奖并刷新积分」`,
+        `点击下方「立即自动完成并领奖」，工具将自动匹配「${expertName}」专家 ID、创建云端对话并上报 /v2/report 埋点`,
+        `若需在网页工作台查看：可点击「打开网页工作台 (/app)」在专家页召唤「${expertName}」`,
       ],
       autoNote: '提示：完成 5 个不同专家体验任务，可同步自动完成「召唤 5 次专家 (100分)」任务！',
     };
   }
 
-  // 2. Summon 5 Experts
+  // 3. Summon 5 Experts
   if (title.includes('召唤 5 次专家')) {
     return {
       category: 'expert_chat',
       expertKeyword: '无畏契约拼豆专家 / 中国电商运营专家 / 抖音策略师 / 商家宣传页与海报设计师 / 直播电商教练',
       samplePrompt: '你好，请给我一个快速入门建议。',
-      targetUrl: 'https://www.workbuddy.cn/experts',
-      desktopProtocolUrl: 'workbuddy://',
+      targetUrl: webWorkspaceUrl,
+      growthCenterUrl,
       steps: [
-        '优先完成列表中那 5 个专项「体验 XXX 专家」任务，本任务进度会自动同步增加至 5/5',
-        '每召唤 1 位不同的专家发送 1 句话，进度即 +1',
-        '达到 5/5 后点击下方「立即领奖并刷新积分」领取 100 积分',
+        '点击下方「立即自动完成并领奖」，工具将自动循环召唤 5 位不同官方专家并上报对话完成事件',
+        '完成后自动调用领奖接口并同步最新实时积分',
       ],
-      autoNote: '联动任务：做完上面 5 个专项专家任务即可直接满进度领奖。',
+      autoNote: '联动任务：自动执行会一次性召唤 5 位不同专家并完成会话上报。',
     };
   }
 
-  // 3. Summon 3 Expert Teams
+  // 4. Summon 3 Expert Teams
   if (title.includes('专家团')) {
     return {
       category: 'expert_team',
       expertKeyword: '专家团',
       samplePrompt: '请帮我制定一份今日重点工作执行计划。',
-      targetUrl: 'https://www.workbuddy.cn/experts?tab=team',
-      desktopProtocolUrl: 'workbuddy://',
+      targetUrl: webWorkspaceUrl,
+      growthCenterUrl,
       steps: [
-        '打开 WorkBuddy 切换至「专家团」标签页',
-        '任选 3 个不同的专家团队点击召唤并各发送 1 条简短指令',
-        '完成后点击下方「立即领奖并刷新积分」领取 100 积分',
+        '点击下方「立即自动完成并领奖」，工具将自动模拟召唤 3 组不同专家团队 (expertType: team) 并上报会话埋点',
+        '完成后自动尝试领取 100 积分并刷新实时积分余额',
       ],
-      autoNote: '支持自动触发上报；若服务端校验实时流会话，按上述步骤 30 秒即可完成。',
+      autoNote: '已对接官方 /console/as/conversations/ 与 /v2/report (expert_actual_use) 真实协议。',
     };
   }
 
-  // 4. Use 5 Templates
+  // 5. Use 5 Templates
   if (title.includes('模板')) {
     return {
       category: 'template',
       samplePrompt: '请按模板默认参数生成一份简要示例。',
-      targetUrl: 'https://www.workbuddy.cn/',
-      desktopProtocolUrl: 'workbuddy://',
+      targetUrl: webWorkspaceUrl,
+      growthCenterUrl,
       steps: [
-        '在 WorkBuddy 点击「新建任务」，在模板区任选 5 个不同的模板',
-        '点击套用模板并发起一次对话',
-        '满 5 次后点击下方「立即领奖并刷新积分」领取 100 积分',
+        '点击下方「立即自动完成并领奖」，工具将自动拉取官方模板列表 (/v2/user/cloudagent/agents/templates)',
+        '自动循环使用 5 个不同模板创建任务并上报 agent_task_created_with_template 埋点后自动清理临时会话',
       ],
-      autoNote: '模板达人任务：套用 5 个不同模板发起对话即可解锁 100 Credits + 5 能量。',
+      autoNote: '模板达人任务：已对接官方模板任务创建与 /v2/report 埋点协议。',
     };
   }
 
-  // 5. Set Automation Task
+  // 6. Set Automation Task
   if (title.includes('自动化任务')) {
     return {
       category: 'automation',
       samplePrompt: '每日早上 9:00 自动汇总今日待办事项',
-      targetUrl: 'https://www.workbuddy.cn/',
-      desktopProtocolUrl: 'workbuddy://',
+      targetUrl: webWorkspaceUrl,
+      growthCenterUrl,
       steps: [
-        '在 WorkBuddy 左侧导航进入「自动化」或「定时任务」模块',
-        '新建 1 个任意自动化规则并保存生效',
-        '点击下方「立即领奖并刷新积分」领取 100 积分',
+        '点击下方「立即自动完成并领奖」，工具将自动调用 /v2/as/scheduler/tasks 创建 1 条自动化定时任务',
+        '上报 automated_task_create_suc 埋点并领奖后，自动清理临时定时任务',
       ],
-      autoNote: '自动高手任务：只需创建 1 条自动化规则即可完成（领奖后可随时关闭该规则）。',
+      autoNote: '自动高手任务：全程通过官方定时任务 API 自动创建与领奖。',
     };
   }
 
-  // 6. Explore Inspiration (PC)
+  // 7. Explore Inspiration (PC)
   if (title.includes('探索优秀灵感')) {
     return {
       category: 'client_action',
-      targetUrl: 'https://www.workbuddy.cn/',
-      desktopProtocolUrl: 'workbuddy://',
+      targetUrl: webWorkspaceUrl,
+      growthCenterUrl,
       steps: [
-        '前往 WorkBuddy 首页或「灵感」专区',
-        '点击任意 1 款「灵感」优秀案例进入体验/查看',
-        '点击下方「自动触发完成并领奖」即可领取 100 积分',
+        '点击下方「立即自动完成并领奖」，工具将拉取首页灵感案例 (/api/v1/artifact-recommend/v1/home/queries)',
+        '自动携带 WorkBuddy/5.9.0 桌面端标识上报 playbook_cta_click 与 playbook_prompt_send 埋点并领奖',
       ],
-      autoNote: 'PC 端任务：工具会自动携带 PC 端标识尝试上报完成。',
+      autoNote: 'PC 端任务：已内置 WorkBuddy/5.9.0 桌面端协议与 /v2/report 灵感埋点。',
     };
   }
 
-  // 7. Discover App (5.5.3+)
+  // 8. Discover App (5.5.3+)
   if (title.includes('发现应用')) {
     return {
       category: 'client_action',
-      targetUrl: 'https://www.workbuddy.cn/',
-      desktopProtocolUrl: 'workbuddy://',
+      targetUrl: webWorkspaceUrl,
+      growthCenterUrl,
       steps: [
-        '工具已自动伪装 WorkBuddy/5.9.0 桌面端请求头尝试触发应用打开埋点',
-        '若需客户端进程确认：打开 WorkBuddy 电脑端点击左上角「发现应用」进入任意 Buddy 应用',
-        '点击下方「立即领奖并刷新积分」领取 100 积分',
+        '点击下方「立即自动完成并领奖」，工具将自动查询官方 Buddy 应用列表并请求应用详情',
+        '自动调用 /api/v2/open-platform/asset-usage/report 与 buddyapp_enter_click 埋点完成任务',
       ],
-      autoNote: '要求电脑端 5.5.3 或以上版本，点击左上角「发现应用」进入任意应用即可。',
+      autoNote: '已内置电脑端 5.9.0 版本号与 Buddy 应用使用上报接口。',
     };
   }
 
-  // 8. Share Skill (5.9.0+)
+  // 9. Share Skill (5.9.0+)
   if (title.includes('分享一个技能')) {
     return {
       category: 'client_action',
-      targetUrl: 'https://www.workbuddy.cn/',
-      desktopProtocolUrl: 'workbuddy://',
+      targetUrl: webWorkspaceUrl,
+      growthCenterUrl,
       steps: [
-        '工具已自动伪装 WorkBuddy/5.9.0 请求头调用技能分享接口',
-        '您也可以在电脑端前往「技能」列表 -> 点击任意技能 -> 点击右上角「分享」按钮生成分享链接（无需真发给好友）',
-        '点击下方「立即领奖并刷新积分」领取 100 积分',
+        '点击下方「立即自动完成并领奖」，工具将自动获取官方技能列表 (/api/v2/open-platform/skills)',
+        '调用官方分享通道接口 (/api/v2/open-platform/asset-shares/c2c/channels) 生成分享链接并上报成功埋点',
       ],
-      autoNote: '小技巧：点击「分享」按钮生成链接的瞬间服务端即判定完成，无需真正发送给好友！',
-    };
-  }
-
-  // 9. Follow Official WeChat Account (24h)
-  if (title.includes('公众号')) {
-    return {
-      category: 'wechat_24h',
-      expertKeyword: '腾讯 WorkBuddy',
-      targetUrl: 'https://www.workbuddy.cn/profile/growth-center',
-      steps: [
-        '打开手机微信搜索并关注「腾讯 WorkBuddy」官方公众号',
-        '在公众号菜单或成长中心完成账号绑定，保持关注满 24 小时',
-        '满 24 小时后，点击下方「立即领奖并刷新积分」或使用「一键执行全部日常」自动领奖',
-      ],
-      autoNote: '该任务由微信开放平台校验关注时长（需满 24 小时），满 24 小时后工具可自动为您领取 100 积分。',
+      autoNote: '无需真正发给好友，直接调用官方 C2C 技能分享接口即可触发完成！',
     };
   }
 
   return {
     category: 'client_action',
-    targetUrl: 'https://www.workbuddy.cn/profile/growth-center',
-    desktopProtocolUrl: 'workbuddy://',
+    targetUrl: growthCenterUrl,
+    growthCenterUrl,
     steps: [
       `查看任务要求：${task.reason || task.name}`,
-      '点击下方「自动触发完成并领奖」尝试服务端直接完成与领奖',
+      '点击下方「立即自动完成并领奖」自动上报事件并领取积分',
     ],
     autoNote: '执行完成后将立即调用官方资源接口同步最新实时积分。',
   };
@@ -201,6 +198,7 @@ export const TaskAssistModal: React.FC<TaskAssistModalProps> = ({
   const [copiedKeyword, setCopiedKeyword] = useState(false);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [isExecuting, setIsExecuting] = useState(false);
+  const [qrImgSrc, setQrImgSrc] = useState('./workbuddy-wechat-mp-qr.png');
   const [resultFeedback, setResultFeedback] = useState<{
     ok: boolean;
     message: string;
@@ -208,7 +206,9 @@ export const TaskAssistModal: React.FC<TaskAssistModalProps> = ({
 
   if (!isOpen || !task) return null;
 
-  const recipe = getTaskRecipe(task);
+  const safeTask = sanitizeTaskProgress(task);
+  const recipe = getTaskRecipe(safeTask);
+  const isWeChatTask = recipe.category === 'wechat_24h';
 
   const handleCopy = (text: string, type: 'keyword' | 'prompt') => {
     navigator.clipboard.writeText(text);
@@ -225,7 +225,7 @@ export const TaskAssistModal: React.FC<TaskAssistModalProps> = ({
     setIsExecuting(true);
     setResultFeedback(null);
     try {
-      const res = await onExecuteAndClaim(task);
+      const res = await onExecuteAndClaim(safeTask);
       setResultFeedback({
         ok: res.ok,
         message: res.message,
@@ -242,17 +242,17 @@ export const TaskAssistModal: React.FC<TaskAssistModalProps> = ({
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-800 bg-slate-950/90">
           <div className="flex items-center gap-2.5">
             <div className="p-2 bg-emerald-500/10 text-emerald-400 rounded-lg border border-emerald-500/20">
-              <Sparkles className="w-5 h-5" />
+              {isWeChatTask ? <QrCode className="w-5 h-5" /> : <Sparkles className="w-5 h-5" />}
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="font-semibold text-slate-100 text-sm">{task.name}</h3>
+                <h3 className="font-semibold text-slate-100 text-sm">{safeTask.name}</h3>
                 <span className="px-2 py-0.5 text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded">
-                  +{task.reward} 积分
+                  +{safeTask.reward} 积分
                 </span>
               </div>
               <p className="text-[11px] text-slate-400">
-                当前进度: {task.currentProgress}/{task.targetProgress} · 状态: {task.status}
+                当前进度: {safeTask.currentProgress}/{safeTask.targetProgress} · 状态: {safeTask.status}
               </p>
             </div>
           </div>
@@ -270,8 +270,41 @@ export const TaskAssistModal: React.FC<TaskAssistModalProps> = ({
           {/* Official Requirement */}
           <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-1">
             <div className="text-[11px] text-slate-400 font-medium">官方完成条件：</div>
-            <div className="text-slate-200 leading-relaxed">{task.reason}</div>
+            <div className="text-slate-200 leading-relaxed">{safeTask.reason}</div>
           </div>
+
+          {/* Dedicated Official WeChat QR Code Card for 关注「腾讯 WorkBuddy」官方公众号 */}
+          {isWeChatTask && (
+            <div className="p-4 bg-gradient-to-b from-emerald-950/40 to-slate-950 border border-emerald-500/30 rounded-2xl flex flex-col items-center text-center space-y-2.5">
+              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11px] font-medium">
+                <QrCode className="w-3.5 h-3.5" />
+                <span>微信扫一扫 · 立即关注「腾讯 WorkBuddy」官方公众号</span>
+              </div>
+
+              <div className="p-2.5 bg-white rounded-xl shadow-lg border-2 border-emerald-500/40">
+                <img
+                  src={qrImgSrc}
+                  alt="腾讯 WorkBuddy 官方公众号二维码"
+                  referrerPolicy="no-referrer"
+                  className="w-44 h-44 object-contain rounded-lg"
+                  onError={() => {
+                    if (
+                      qrImgSrc !==
+                      'https://download.codebuddy.cn/web/docs/f35a54ab268600af7acf84d08301d5e697984514/docs/static/contact-wechat-mp.QHyrKArB.png'
+                    ) {
+                      setQrImgSrc(
+                        'https://download.codebuddy.cn/web/docs/f35a54ab268600af7acf84d08301d5e697984514/docs/static/contact-wechat-mp.QHyrKArB.png'
+                      );
+                    }
+                  }}
+                />
+              </div>
+
+              <p className="text-[11px] text-slate-300 max-w-xs leading-relaxed">
+                使用绑定当前 WorkBuddy 账号的微信扫码关注，保持关注满 <strong className="text-emerald-400">24 小时</strong> 后点击下方按钮即可直接领取 <strong className="text-emerald-400">100 积分</strong>。
+              </p>
+            </div>
+          )}
 
           {/* Quick Copy Helpers for Expert / Prompt */}
           {(recipe.expertKeyword || recipe.samplePrompt) && (
@@ -285,7 +318,7 @@ export const TaskAssistModal: React.FC<TaskAssistModalProps> = ({
                   <button
                     type="button"
                     onClick={() => handleCopy(recipe.expertKeyword!, 'keyword')}
-                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 flex items-center gap-1 shrink-0 transition-colors cursor-pointer"
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 flex items-center gap-1 shrink-0 transition-colors cursor-pointer whitespace-nowrap"
                   >
                     {copiedKeyword ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                     <span>{copiedKeyword ? '已复制名称' : '一键复制名称'}</span>
@@ -302,7 +335,7 @@ export const TaskAssistModal: React.FC<TaskAssistModalProps> = ({
                   <button
                     type="button"
                     onClick={() => handleCopy(recipe.samplePrompt!, 'prompt')}
-                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 flex items-center gap-1 shrink-0 transition-colors cursor-pointer"
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 flex items-center gap-1 shrink-0 transition-colors cursor-pointer whitespace-nowrap"
                   >
                     {copiedPrompt ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <MessageSquare className="w-3.5 h-3.5" />}
                     <span>{copiedPrompt ? '已复制提问' : '一键复制提问'}</span>
@@ -314,7 +347,7 @@ export const TaskAssistModal: React.FC<TaskAssistModalProps> = ({
 
           {/* Step-by-step Execution Guide */}
           <div className="space-y-2">
-            <div className="text-slate-300 font-medium">快速完成方案：</div>
+            <div className="text-slate-300 font-medium">自动执行原理与说明：</div>
             <div className="space-y-1.5">
               {recipe.steps.map((step, i) => (
                 <div key={i} className="flex items-start gap-2 text-slate-300 leading-relaxed">
@@ -352,27 +385,44 @@ export const TaskAssistModal: React.FC<TaskAssistModalProps> = ({
           <div className="pt-1 flex flex-col sm:flex-row gap-2">
             <button
               type="button"
-              onClick={() => triggerExternalDownload(recipe.targetUrl)}
-              className="flex-1 py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium rounded-xl border border-slate-700 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              onClick={() => triggerExternalDownload(recipe.growthCenterUrl)}
+              className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium rounded-xl border border-slate-700 flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
             >
               <ExternalLink className="w-3.5 h-3.5 text-indigo-400" />
-              <span>打开官方任务页去完成</span>
+              <span>打开官方成长中心</span>
             </button>
+
+            {!isWeChatTask && (
+              <button
+                type="button"
+                onClick={() => triggerExternalDownload(recipe.targetUrl)}
+                className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium rounded-xl border border-slate-700 flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+              >
+                <ExternalLink className="w-3.5 h-3.5 text-emerald-400" />
+                <span>打开网页工作台</span>
+              </button>
+            )}
 
             <button
               type="button"
               onClick={handleRunExecute}
               disabled={isExecuting}
-              className="flex-1 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+              className="flex-1 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
             >
               {isExecuting ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : task.status === '已领奖' ? (
+              ) : safeTask.status === '已领奖' ? (
                 <Gift className="w-3.5 h-3.5" />
               ) : (
                 <Play className="w-3.5 h-3.5 fill-current" />
               )}
-              <span>{isExecuting ? '正在执行并同步积分...' : '自动触发完成 / 立即领奖'}</span>
+              <span>
+                {isExecuting
+                  ? '正在执行并同步积分...'
+                  : isWeChatTask
+                  ? '同步关注状态并立即领奖'
+                  : '立即自动完成并领奖'}
+              </span>
             </button>
           </div>
         </div>
