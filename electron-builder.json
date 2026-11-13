@@ -13,7 +13,7 @@
   "win": {
     "icon": "electron/icons/icon.ico",
     "requestedExecutionLevel": "asInvoker",
-    "artifactName": "workbuddyTools-${version}-win-${arch}-${target}.${ext}",
+    "artifactName": "workbuddyTools-${version}-win-${arch}.${ext}",
     "target": [
       {
         "target": "nsis",
