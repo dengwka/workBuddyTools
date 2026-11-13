@@ -1,4 +1,4 @@
-name: Build and Release Windows EXE
+name: Build and Release Cross-Platform Packages (Windows & macOS)
 
 on:
   push:
@@ -9,15 +9,15 @@ on:
       version:
         description: 'Release Version'
         required: false
-        default: 'v1.0.0'
+        default: 'v1.1.0'
 
 permissions:
   contents: write
 
 jobs:
   build-windows:
+    name: Build Windows EXE
     runs-on: windows-latest
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -36,33 +36,108 @@ jobs:
         run: |
           npm run build
 
-      - name: Package Windows Desktop App (.exe)
+      - name: Package Windows (.exe)
         run: |
           npx electron-builder --win --x64
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload Build Artifacts
+      - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: workbuddy-tools-windows
+          name: windows-exe
           path: release/*.exe
+
+  build-macos:
+    name: Build macOS (Intel x64 & Apple Silicon arm64)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Dependencies
+        run: |
+          npm install --legacy-peer-deps
+          npm install --legacy-peer-deps -D electron electron-builder
+
+      - name: Build Web Dist
+        run: |
+          npm run build
+
+      - name: Package macOS Intel (x64) and Apple Silicon (arm64)
+        run: |
+          npx electron-builder --mac --x64 --arm64
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload macOS Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: |
+            release/*.dmg
+            release/*.zip
+
+  publish-release:
+    name: Publish GitHub Release (v1.1.0)
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-exe
+          path: dist-release
+
+      - name: Download macOS Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist-release
+
+      - name: Display Release Files
+        run: |
+          ls -lh dist-release/
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         with:
-          tag_name: ${{ github.ref_name || inputs.version || 'v1.0.0' }}
-          name: WorkBuddy 账号日常工具 ${{ github.ref_name || inputs.version || 'v1.0.0' }}
-          files: release/*.exe
+          tag_name: ${{ github.ref_name || inputs.version || 'v1.1.0' }}
+          name: WorkBuddy 账号日常工具 ${{ github.ref_name || inputs.version || 'v1.1.0' }}
+          files: |
+            dist-release/*.exe
+            dist-release/*.dmg
+            dist-release/*.zip
           draft: false
           prerelease: false
           body: |
-            ### 🌟 WorkBuddy 账号日常工具 v1.0.0
+            ### 🌟 WorkBuddy 账号日常工具 v1.1.0 正式发布
 
-            - **官方接口真实对接**：直连 workbuddy.cn 成长中心 API，真实完成每日成长任务与签到打卡并入账积分；
-            - **多账号集中管理**：支持配置多个账号 Cookie / Token，一键批量检测与执行；
-            - **猫猫旅行自动化**：支持自动检测猫猫状态、自动启程旅行并结算领取旅行积分奖励；
-            - **双端支持**：支持本地浏览器访问，也可下载打包后的 Windows EXE 桌面客户端直接使用。
+            本版本主要针对真实 API 对接稳定性、凭据解析及跨平台多端打包进行了全面升级：
+
+            #### 🚀 核心新特性与优化
+            1. **官方接口精准对接与 401 彻底解决**：
+               - 完美适配 APISIX 鉴权网关协议，补齐全套官方请求头 (`Origin`, `Referer`, `Sec-Ch-Ua`, `User-Agent`)；
+               - 移除 Cookie 模式下意外注入的 Authorization 头，杜绝鉴权冲突；
+               - 智能识别并自动清洗 cURL 命令与带有前后引号的 Cookie 凭据。
+            2. **实时积分自动获取与同步**：
+               - 双击账号随时重新编辑或更新凭据，一键「测试凭据并自动获取实时积分」；
+               - 完美兼容 `TotalCredits` 大驼峰格式与多维度资产概览。
+            3. **多账号管理增强**：
+               - 双击账号行即可编辑，支持一键安全删除指定账号（集成应用内确认对话框）；
+               - 支持全选 / 反选 / 批量执行。
+            4. **全平台客户端支持 (3 大打包产物)**：
+               - 🪟 **Windows x64 EXE** 安装包与便携版；
+               - 🍎 **macOS Intel (x64)** DMG 安装镜像；
+               - 🍏 **macOS Apple Silicon (M1/M2/M3/M4 arm64)** DMG 安装镜像。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

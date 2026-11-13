@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { X, UserPlus, Key, Globe, Shield, Sparkles } from 'lucide-react';
+import { X, UserPlus, Key, Globe, Shield, Sparkles, RefreshCw, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { WorkBuddyAccount, AccountRegion } from '../types/workbuddy';
 import { DEFAULT_TASKS_TEMPLATE } from '../utils/initialData';
+import { workbuddyRealApi, extractCleanCredentials } from '../utils/workbuddyRealApi';
 
 interface AddAccountModalProps {
   isOpen: boolean;
@@ -16,9 +17,14 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
   const [authType, setAuthType] = useState<'cookie' | 'token'>('cookie');
   const [credentials, setCredentials] = useState('');
   const [proxyUrl, setProxyUrl] = useState('');
-  const [points, setPoints] = useState<number>(1000);
+  const [points, setPoints] = useState<number>(0);
 
   const [errorMessage, setErrorMessage] = useState('');
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    success: boolean;
+    message: string;
+  } | null>(null);
 
   if (!isOpen) return null;
 
@@ -31,6 +37,74 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
     setCredentials(`qcloud_visitId=sample_${randomId}; session=sess_${randomId}`);
     setPoints(Math.floor(1500 + Math.random() * 2500));
     setErrorMessage('');
+    setTestResult(null);
+  };
+
+  const handleTestCredentials = async () => {
+    if (!credentials.trim()) {
+      setErrorMessage('请先粘贴 Cookie、Token 或完整 cURL 命令再进行测试');
+      return;
+    }
+
+    const cleaned = extractCleanCredentials(credentials, authType);
+    if (cleaned.credentials !== credentials.trim() || cleaned.authType !== authType) {
+      setCredentials(cleaned.credentials);
+      setAuthType(cleaned.authType);
+    }
+
+    setErrorMessage('');
+    setIsTesting(true);
+    setTestResult(null);
+
+    try {
+      const summaryRes = await workbuddyRealApi.getResourceSummary(cleaned.credentials, cleaned.authType);
+      if (summaryRes.ok && summaryRes.data) {
+        const resData = summaryRes.data.data || summaryRes.data;
+        const liveCredit =
+          resData.TotalCredits ??
+          resData.total_credit ??
+          resData.balance ??
+          resData.platform_reward_credit ??
+          resData.available_credits;
+
+        if (liveCredit !== undefined && liveCredit !== null) {
+          setPoints(Number(liveCredit));
+          setTestResult({
+            success: true,
+            message: `${cleaned.isExtractedFromCurl ? '已自动从 cURL 提取凭据并验证成功！' : '接口验证成功！'}官方实时积分：${liveCredit}`,
+          });
+          return;
+        }
+      }
+
+      const taskRes = await workbuddyRealApi.getGrowthTasks(cleaned.credentials, cleaned.authType);
+      if (taskRes.ok) {
+        setTestResult({
+          success: true,
+          message: '接口鉴权成功！成长中心接口响应正常。',
+        });
+        return;
+      }
+
+      if (summaryRes.status === 401 || taskRes.status === 401) {
+        setTestResult({
+          success: false,
+          message: '官方接口返回 401 Unauthorized：请确认复制的 Cookie 包含完整 session（或直接粘贴整段 cURL）。',
+        });
+      } else {
+        setTestResult({
+          success: false,
+          message: `接口响应状态码 ${summaryRes.status || taskRes.status}，请核对凭据或稍后重试。`,
+        });
+      }
+    } catch (err: unknown) {
+      setTestResult({
+        success: false,
+        message: err instanceof Error ? err.message : '连接服务异常，请检查网络或代理配置',
+      });
+    } finally {
+      setIsTesting(false);
+    }
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -41,14 +115,16 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
     }
     setErrorMessage('');
 
+    const cleaned = extractCleanCredentials(credentials, authType);
+
     const newAccount: WorkBuddyAccount = {
       id: accountId.trim(),
       nickname: nickname.trim() || accountId.trim(),
       region,
       status: '正常',
       points: Number(points) || 0,
-      authType,
-      credentials: credentials.trim() || 'mock_credentials',
+      authType: cleaned.authType,
+      credentials: cleaned.credentials || 'mock_credentials',
       proxyUrl: proxyUrl.trim() || undefined,
       lastUpdated: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
       catTravel: {
@@ -72,11 +148,12 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
     setAccountId('');
     setNickname('');
     setCredentials('');
+    setTestResult(null);
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in">
-      <div className="relative w-full max-w-lg bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+      <div className="relative w-full max-w-lg bg-slate-900 border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950/60">
           <div className="flex items-center gap-2.5">
@@ -85,7 +162,7 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
             </div>
             <div>
               <h3 className="font-semibold text-slate-100 text-sm">添加 WorkBuddy 账号</h3>
-              <p className="text-xs text-slate-400">配置账号凭据，支持 Cookie / Token 授权</p>
+              <p className="text-xs text-slate-400">支持粘贴完整 Cookie、Token 或 Chrome 复制的 cURL 命令</p>
             </div>
           </div>
           <button
@@ -97,7 +174,7 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
         </div>
 
         {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4 text-xs">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4 text-xs overflow-y-auto">
           {errorMessage && (
             <div className="p-2.5 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 font-medium text-xs">
               {errorMessage}
@@ -155,7 +232,7 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
               </select>
             </div>
             <div>
-              <label className="text-slate-300 font-medium block mb-1">初始积分 (Points)</label>
+              <label className="text-slate-300 font-medium block mb-1">初始积分 (自动获取或手动填)</label>
               <input
                 type="number"
                 value={points}
@@ -169,7 +246,7 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
             <label className="text-slate-300 font-medium block mb-1 flex items-center justify-between">
               <span className="flex items-center gap-1">
                 <Key className="w-3.5 h-3.5 text-emerald-400" />
-                <span>授权认证凭据 (Cookie 或 Token) *</span>
+                <span>授权认证凭据 (支持 Cookie / cURL) *</span>
               </span>
               <div className="flex items-center gap-2">
                 <label className="inline-flex items-center gap-1 cursor-pointer">
@@ -196,17 +273,50 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
             </label>
             <textarea
               value={credentials}
-              onChange={(e) => setCredentials(e.target.value)}
-              placeholder={
-                authType === 'cookie'
-                  ? '在 workbuddy.cn 浏览器控制台(F12) -> 网络 -> 复制请求头中的 Cookie 字符串粘贴至此'
-                  : '在 workbuddy.cn 浏览器控制台(F12) -> 复制 Authorization: Bearer 后面的 Token'
-              }
+              onChange={(e) => {
+                setCredentials(e.target.value);
+                setTestResult(null);
+              }}
+              placeholder="直接粘贴 Chrome DevTools 复制的 Cookie 值或完整的 '复制为 cURL' 命令，工具会自动解析清洗"
               rows={3}
               className="w-full bg-slate-950 border border-slate-700/80 rounded-xl p-3 text-xs font-mono text-slate-200 focus:outline-none focus:border-emerald-500 resize-none"
             />
-            <div className="mt-1 text-[11px] text-slate-400 leading-relaxed">
-              💡 <strong>如何获取真实凭据</strong>：在电脑浏览器打开 <a href="https://www.workbuddy.cn/profile/growth-center" target="_blank" rel="noreferrer" className="text-emerald-400 underline">workbuddy.cn</a>，按 F12 打开开发者工具 &rarr; 切换到「网络 (Network)」&rarr; 刷新页面 &rarr; 点击任意接口 &rarr; 复制「请求标头 (Request Headers)」里的 <code className="text-amber-300">Cookie</code> 或 <code className="text-amber-300">Authorization</code>。
+            <div className="mt-2 flex items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={handleTestCredentials}
+                disabled={isTesting}
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {isTesting ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5 text-emerald-400" />
+                )}
+                <span>{isTesting ? '正在验证...' : '测试凭据并自动获取实时积分'}</span>
+              </button>
+              <span className="text-[11px] text-slate-500">自动识别 cURL / Cookie</span>
+            </div>
+
+            {testResult && (
+              <div
+                className={`mt-2 p-2.5 rounded-xl border text-xs flex items-start gap-2 ${
+                  testResult.success
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                    : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                }`}
+              >
+                {testResult.success ? (
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-400" />
+                )}
+                <span>{testResult.message}</span>
+              </div>
+            )}
+
+            <div className="mt-2 text-[11px] text-slate-400 leading-relaxed">
+              💡 <strong>如何获取</strong>：打开 <a href="https://www.workbuddy.cn/profile/plans-usage" target="_blank" rel="noreferrer" className="text-emerald-400 underline">workbuddy.cn</a> &rarr; F12 网络 &rarr; 右键 <code className="text-amber-300">get-user-resource-summary</code> &rarr; 复制为 cURL 或复制请求头 <code className="text-amber-300">Cookie</code> 整段粘贴即可。
             </div>
           </div>
 

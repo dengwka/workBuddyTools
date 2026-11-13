@@ -87,6 +87,7 @@ export class AutomationEngine {
       if (resourceRes.ok && resourceRes.data) {
         const resData = resourceRes.data.data || resourceRes.data;
         const totalPoints =
+          resData.TotalCredits ??
           resData.total_credit ??
           resData.balance ??
           resData.platform_reward_credit ??

@@ -44,7 +44,7 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <span className="font-bold text-slate-100 text-sm tracking-tight">WorkBuddy 账号日常工具</span>
                 <span className="text-[10px] font-mono px-1.5 py-0.2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded">
-                  v1.0.0
+                  v1.1.0
                 </span>
                 <span className="text-[10px] text-slate-500 hidden sm:inline">
                   (workbuddyTools)
@@ -99,7 +99,7 @@ export default function App() {
               className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-medium rounded-lg border border-slate-800 flex items-center gap-1.5 transition-colors cursor-pointer"
             >
               <PackageCheck className="w-3.5 h-3.5 text-indigo-400" />
-              <span className="hidden sm:inline">打包 Windows EXE</span>
+              <span className="hidden sm:inline">桌面端打包 (Win / Mac)</span>
             </button>
 
             <button
@@ -142,7 +142,7 @@ export default function App() {
               <span>Token 已配置</span>
             </span>
             <span>•</span>
-            <span className="text-slate-300">支持本地浏览器 / Windows EXE 双运行模式</span>
+            <span className="text-slate-300">支持浏览器 / Win EXE / macOS (Intel & M芯片) 多端运行</span>
           </div>
         </div>
 
@@ -164,7 +164,7 @@ export default function App() {
       {/* Footer */}
       <footer className="border-t border-slate-900 bg-slate-950 py-4 text-center text-xs text-slate-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <span>WorkBuddy 账号日常工具 v1.0.0 • workbuddyTools</span>
+          <span>WorkBuddy 账号日常工具 v1.1.0 • workbuddyTools</span>
           <div className="flex items-center gap-4">
             <button
               onClick={() => setIsPackagingGuideOpen(true)}

@@ -17,18 +17,31 @@ async function startServer() {
     try {
       const { url, method = 'GET', headers = {}, body } = req.body;
 
-      if (!url || !url.startsWith('https://www.workbuddy.cn')) {
-        return res.status(400).json({ error: 'Invalid or disallowed WorkBuddy URL' });
-      }
-
+      // Guarantee strict official headers for APISIX gateway
       const requestHeaders: Record<string, string> = {
         'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 WorkBuddy/0.5.9',
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
         Accept: 'application/json, text/plain, */*',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
         'Content-Type': 'application/json',
         'X-Client-Platform': 'web',
+        Origin: 'https://www.workbuddy.cn',
+        Referer: url.includes('/billing')
+          ? 'https://www.workbuddy.cn/profile/plans-usage'
+          : 'https://www.workbuddy.cn/profile/growth-center',
+        'Sec-Ch-Ua': '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"',
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': '"macOS"',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
         ...headers,
       };
+
+      // If headers has Cookie and Authorization is not a valid Bearer token, remove Authorization to avoid APISIX 401
+      if (requestHeaders['Cookie'] && requestHeaders['Authorization'] && !requestHeaders['Authorization'].startsWith('Bearer ey')) {
+        delete requestHeaders['Authorization'];
+      }
 
       const fetchOptions: RequestInit = {
         method,

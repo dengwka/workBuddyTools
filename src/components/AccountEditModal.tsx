@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Key, Globe, Shield, Sparkles, RefreshCw, CheckCircle2, AlertCircle, Loader2, Edit3 } from 'lucide-react';
 import { WorkBuddyAccount, AccountRegion } from '../types/workbuddy';
-import { workbuddyRealApi } from '../utils/workbuddyRealApi';
+import { workbuddyRealApi, extractCleanCredentials } from '../utils/workbuddyRealApi';
 
 interface AccountEditModalProps {
   isOpen: boolean;
@@ -52,19 +52,27 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
   // Test credentials and fetch live points from official WorkBuddy API
   const handleTestAndFetchPoints = async () => {
     if (!credentials.trim()) {
-      setErrorMessage('请先输入 Cookie 或 Token 凭据后再进行测试');
+      setErrorMessage('请先输入 Cookie、Token 或完整 cURL 命令后再进行测试');
       return;
     }
+
+    const cleaned = extractCleanCredentials(credentials, authType);
+    if (cleaned.credentials !== credentials.trim() || cleaned.authType !== authType) {
+      setCredentials(cleaned.credentials);
+      setAuthType(cleaned.authType);
+    }
+
     setErrorMessage('');
     setIsTesting(true);
     setTestResult(null);
 
     try {
-      const summaryRes = await workbuddyRealApi.getResourceSummary(credentials.trim(), authType);
+      const summaryRes = await workbuddyRealApi.getResourceSummary(cleaned.credentials, cleaned.authType);
       
       if (summaryRes.ok && summaryRes.data) {
         const resData = summaryRes.data.data || summaryRes.data;
         const liveCredit =
+          resData.TotalCredits ??
           resData.total_credit ??
           resData.balance ??
           resData.platform_reward_credit ??
@@ -74,7 +82,7 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
           setPoints(Number(liveCredit));
           setTestResult({
             success: true,
-            message: `接口验证成功！官方实时积分已同步：${liveCredit} 积分`,
+            message: `${cleaned.isExtractedFromCurl ? '已自动从 cURL 提取凭据并验证成功！' : '接口验证成功！'}官方实时积分已同步：${liveCredit} 积分`,
             livePoints: Number(liveCredit),
           });
           return;
@@ -82,7 +90,7 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
       }
 
       // If resource summary is empty or failed, also try tasks endpoint to verify token validity
-      const taskRes = await workbuddyRealApi.getGrowthTasks(credentials.trim(), authType);
+      const taskRes = await workbuddyRealApi.getGrowthTasks(cleaned.credentials, cleaned.authType);
       if (taskRes.ok) {
         setTestResult({
           success: true,
@@ -94,7 +102,7 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
       if (summaryRes.status === 401 || taskRes.status === 401) {
         setTestResult({
           success: false,
-          message: '官方接口返回 401 Unauthorized：Cookie 或 Token 已过期，请重新在浏览器复制最新的 session。',
+          message: '官方接口返回 401 Unauthorized：Cookie 或 Token 已过期，请重新在浏览器复制最新的 session 或 cURL 命令。',
         });
       } else {
         setTestResult({
@@ -115,16 +123,18 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!credentials.trim()) {
-      setErrorMessage('请输入授权认证凭据 (Cookie 或 Token)');
+      setErrorMessage('请输入授权认证凭据 (Cookie、Token 或 cURL 命令)');
       return;
     }
+
+    const cleaned = extractCleanCredentials(credentials, authType);
 
     const updated: WorkBuddyAccount = {
       ...account,
       nickname: nickname.trim() || account.id,
       region,
-      authType,
-      credentials: credentials.trim(),
+      authType: cleaned.authType,
+      credentials: cleaned.credentials,
       proxyUrl: proxyUrl.trim() || undefined,
       points: Number(points) || 0,
       status: testResult?.success ? '正常' : account.status,

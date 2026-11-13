@@ -221,6 +221,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
       if (summaryRes.ok && summaryRes.data) {
         const resData = summaryRes.data.data || summaryRes.data;
         const liveCredit =
+          resData.TotalCredits ??
           resData.total_credit ??
           resData.balance ??
           resData.platform_reward_credit ??
@@ -541,7 +542,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
           </div>
           <div className="flex items-center gap-2">
             <span className="font-semibold text-slate-100 text-sm tracking-tight">WorkBuddy 账号日常工具</span>
-            <span className="text-[11px] font-mono text-slate-400">v1.0.0</span>
+            <span className="text-[11px] font-mono text-slate-400">v1.1.0</span>
           </div>
         </div>
 

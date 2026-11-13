@@ -89,10 +89,10 @@ npm run dev
                 <span className="w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-400 font-bold flex items-center justify-center text-[11px]">
                   2
                 </span>
-                <span>一键打包为 Windows EXE 桌面客户端</span>
+                <span>一键打包为 Windows EXE / macOS (Intel & M芯片) 桌面客户端</span>
               </div>
               <button
-                onClick={() => copyText('npm install -D electron electron-builder\nnpm run build:exe', 'exe')}
+                onClick={() => copyText('npm install -D electron electron-builder\nnpm run build:exe\n# macOS:\nnpm run build:mac', 'exe')}
                 className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 transition-colors"
               >
                 {copiedCmd === 'exe' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
@@ -100,18 +100,22 @@ npm run dev
               </button>
             </div>
             <p className="text-slate-400 text-[11px] leading-relaxed">
-              项目内已包含 <code className="text-indigo-300">electron/main.cjs</code>、<code className="text-indigo-300">electron/preload.cjs</code> 与 <code className="text-indigo-300">electron-builder.json</code>。在 Windows 机器上执行：
+              项目内已包含 <code className="text-indigo-300">electron/main.cjs</code>（内置原生 IPC 代理直连工作台）、<code className="text-indigo-300">electron/preload.cjs</code> 与 <code className="text-indigo-300">electron-builder.json</code>。执行：
             </p>
             <pre className="bg-slate-900 p-2.5 rounded-lg border border-slate-800 font-mono text-[11px] text-indigo-300 overflow-x-auto whitespace-pre">
 {`# 1. 安装打包工具（仅需一次）
-npm install -D electron electron-builder
+npm install --legacy-peer-deps -D electron electron-builder
 
-# 2. 一键编译并生成 Windows 安装包 & 便携式 exe
+# 2. 打包 Windows 安装包 & 便携式 exe
 npm run build:exe
 
-# 输出产物位于:
-# release/WorkBuddy 账号日常工具 Setup 0.5.9.exe (安装版)
-# release/WorkBuddy 账号日常工具 0.5.9.exe (免安装绿色版)`}
+# 3. 打包 macOS Intel (x64) + Apple Silicon M芯片 (arm64)
+npm run build:mac
+
+# 输出产物位于 release/ 目录:
+# - WorkBuddy 账号日常工具-1.1.0-win-x64.exe
+# - WorkBuddy 账号日常工具-1.1.0-mac-x64.dmg (Intel)
+# - WorkBuddy 账号日常工具-1.1.0-mac-arm64.dmg (M芯片)`}
             </pre>
           </div>
 

@@ -1,18 +1,18 @@
 # WorkBuddy 账号日常工具 (workbuddyTools)
 
 <p align="center">
-  <img src="public/assets/workbuddy_preview_v100.svg" alt="WorkBuddy 账号日常工具 v1.0.0" width="860" style="border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.5);" />
+  <img src="public/assets/workbuddy_preview_v100.svg" alt="WorkBuddy 账号日常工具 v1.1.0" width="860" style="border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.5);" />
 </p>
 
 <p align="center">
   <strong>专为腾讯 WorkBuddy (workbuddy.cn) 打造的多账号自动化日常任务与猫猫旅行助手</strong><br />
-  支持本地浏览器极速访问与打包为 Windows EXE 桌面端，真实对接官方成长中心，一键完成每日任务并领奖入账。
+  支持本地浏览器极速访问，支持打包为 <strong>Windows EXE</strong>、<strong>macOS Intel (x64)</strong> 与 <strong>macOS Apple Silicon (M芯片 arm64)</strong> 全平台桌面端，真实对接官方成长中心，一键完成每日任务并领奖入账。
 </p>
 
 <p align="center">
   <a href="https://github.com/dengwka/workBuddyTools/releases"><img src="https://img.shields.io/github/v/release/dengwka/workBuddyTools?color=10b981&label=Release" alt="Release" /></a>
-  <a href="https://github.com/dengwka/workBuddyTools/actions"><img src="https://img.shields.io/github/actions/workflow/status/dengwka/workBuddyTools/build.yml?branch=main&label=Build%20EXE" alt="Build Status" /></a>
-  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Web-blue" alt="Platform" />
+  <a href="https://github.com/dengwka/workBuddyTools/actions"><img src="https://img.shields.io/github/actions/workflow/status/dengwka/workBuddyTools/build.yml?branch=main&label=Build%20Win%20%26%20Mac" alt="Build Status" /></a>
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20(Intel%2FM)%20%7C%20Web-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/Node.js-%E2%89%A520.0.0-brightgreen" alt="Node.js" />
   <img src="https://img.shields.io/badge/Electron-Desktop%20Ready-47848F?logo=electron" alt="Electron" />
   <img src="https://img.shields.io/badge/License-Apache--2.0-orange" alt="License" />
@@ -62,11 +62,12 @@
 
 ## 🚀 快速上手
 
-### 方式一：直接下载 Windows EXE 客户端（推荐）
+### 方式一：直接下载全平台桌面客户端（推荐）
 
-前往项目的 [Releases 发布页面](https://github.com/dengwka/workBuddyTools/releases) 下载最新版本的打包产物：
-- `WorkBuddy 账号日常工具 Setup 1.0.0.exe`：Windows 标准安装包
-- `WorkBuddy 账号日常工具 1.0.0.exe`：免安装单文件绿色便携版
+前往项目的 [Releases 发布页面](https://github.com/dengwka/workBuddyTools/releases) 下载最新版本 (`v1.1.0`) 的打包产物（已支持 3 大平台架构）：
+- 🪟 **Windows (x64)**: `WorkBuddy 账号日常工具-1.1.0-win-x64.exe`（安装包与便携版）
+- 🍎 **macOS Intel 芯片 (x64)**: `WorkBuddy 账号日常工具-1.1.0-mac-x64.dmg`
+- 🍏 **macOS Apple Silicon M1/M2/M3/M4 (arm64)**: `WorkBuddy 账号日常工具-1.1.0-mac-arm64.dmg`
 
 ### 方式二：本地源码启动（Web 模式）
 
@@ -85,14 +86,17 @@ npm run dev
 # 浏览器打开 http://localhost:3000 即可使用
 ```
 
-### 方式三：本地打包为 Windows EXE 桌面端
+### 方式三：本地打包为 Windows EXE / macOS DMG 桌面端
 
 ```bash
 # 安装 Electron 与打包依赖
 npm install --legacy-peer-deps -D electron electron-builder
 
-# 执行编译与 Windows 客户端打包
+# 打包 Windows EXE
 npm run build:exe
+
+# 打包 macOS (同时生成 Intel x64 与 M芯片 arm64)
+npm run build:mac
 
 # 产物输出于 release/ 目录下
 ```

@@ -21,36 +21,104 @@ export interface WorkBuddyUserResourceSummary {
   raw?: any;
 }
 
+export function extractCleanCredentials(
+  rawInput: string,
+  currentAuthType: 'cookie' | 'token' = 'cookie'
+): { credentials: string; authType: 'cookie' | 'token'; isExtractedFromCurl?: boolean } {
+  let cleaned = (rawInput || '').trim();
+  if (!cleaned) {
+    return { credentials: '', authType: currentAuthType };
+  }
+
+  // 1. Detect cURL command from Chrome DevTools or curl CLI
+  if (
+    cleaned.startsWith('curl') ||
+    cleaned.includes('-b ') ||
+    cleaned.includes('--cookie') ||
+    /-[Hh]\s+['"]cookie:/i.test(cleaned)
+  ) {
+    // Check -b '...' or -b "..." or --cookie '...'
+    const bMatch =
+      cleaned.match(/(?:-b|--cookie)\s+['"]([^'"]+)['"]/i) ||
+      cleaned.match(/(?:-b|--cookie)\s+(\S+)/i);
+    if (bMatch && bMatch[1]) {
+      return { credentials: bMatch[1].trim(), authType: 'cookie', isExtractedFromCurl: true };
+    }
+    // Check -H 'cookie: ...'
+    const hCookieMatch = cleaned.match(/-H\s+['"]cookie:\s*([^'"]+)['"]/i);
+    if (hCookieMatch && hCookieMatch[1]) {
+      return { credentials: hCookieMatch[1].trim(), authType: 'cookie', isExtractedFromCurl: true };
+    }
+    // Check -H 'authorization: Bearer ...'
+    const hAuthMatch = cleaned.match(/-H\s+['"]authorization:\s*Bearer\s+([^'"]+)['"]/i);
+    if (hAuthMatch && hAuthMatch[1]) {
+      return { credentials: hAuthMatch[1].trim(), authType: 'token', isExtractedFromCurl: true };
+    }
+  }
+
+  // 2. Strip leading "Cookie: " or "cookie: "
+  if (/^cookie:\s*/i.test(cleaned)) {
+    cleaned = cleaned.replace(/^cookie:\s*/i, '').trim();
+    return { credentials: cleaned, authType: 'cookie' };
+  }
+
+  // 3. Strip leading "Authorization: Bearer " or "Bearer "
+  if (/^(?:authorization:\s*)?bearer\s+/i.test(cleaned)) {
+    cleaned = cleaned.replace(/^(?:authorization:\s*)?bearer\s+/i, '').trim();
+    return { credentials: cleaned, authType: 'token' };
+  }
+
+  // 4. Strip wrapping single or double quotes
+  if (
+    (cleaned.startsWith("'") && cleaned.endsWith("'")) ||
+    (cleaned.startsWith('"') && cleaned.endsWith('"'))
+  ) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+
+  // 5. If it looks like a cookie (contains '=' and ';')
+  if (cleaned.includes(';') && cleaned.includes('=')) {
+    return { credentials: cleaned, authType: 'cookie' };
+  }
+
+  // 6. If it looks like a JWT token
+  if (cleaned.startsWith('ey') && !cleaned.includes(';')) {
+    return { credentials: cleaned, authType: 'token' };
+  }
+
+  return { credentials: cleaned, authType: currentAuthType };
+}
+
 export class WorkBuddyRealApi {
   private baseUrl = 'https://www.workbuddy.cn';
 
   private getHeaders(credentials: string, authType: 'cookie' | 'token'): Record<string, string> {
-    const clean = credentials.trim();
+    const cleanInfo = extractCleanCredentials(credentials, authType);
+    const clean = cleanInfo.credentials;
+    const finalAuthType = cleanInfo.authType;
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/plain, */*',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
       'X-Client-Platform': 'web',
+      Origin: 'https://www.workbuddy.cn',
+      Referer: 'https://www.workbuddy.cn/profile/plans-usage',
     };
 
-    if (authType === 'token' || clean.startsWith('ey') || clean.startsWith('Bearer ')) {
+    if (finalAuthType === 'token') {
       const token = clean.replace(/^Bearer\s+/i, '');
       headers['Authorization'] = `Bearer ${token}`;
-      // Some endpoints check cookie as well
-      headers['Cookie'] = `wb_token=${token}; token=${token}; Authorization=${token}`;
+      headers['Cookie'] = `token=${token}; wb_token=${token}`;
     } else {
-      // Cookie mode
+      // Pure Cookie mode: strictly DO NOT include Authorization header to avoid APISIX token mismatch
       headers['Cookie'] = clean;
-      // Extract token from cookie string if present
-      const tokenMatch = clean.match(/(?:wb_token|token|Authorization)=([^;]+)/i);
-      if (tokenMatch) {
-        headers['Authorization'] = `Bearer ${tokenMatch[1]}`;
-      }
     }
 
     return headers;
   }
 
-  // Sends request through our backend proxy or direct
+  // Sends request through Electron IPC proxy (Desktop) or Express backend proxy (Web)
   private async request(
     path: string,
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
@@ -62,6 +130,27 @@ export class WorkBuddyRealApi {
     const headers = this.getHeaders(credentials, authType);
 
     try {
+      const electronAPI = (window as unknown as {
+        electronAPI?: {
+          isElectron?: boolean;
+          proxyRequest?: (payload: {
+            url: string;
+            method: string;
+            headers: Record<string, string>;
+            body?: any;
+          }) => Promise<{ ok: boolean; status: number; data: any }>;
+        };
+      }).electronAPI;
+
+      if (electronAPI?.isElectron && typeof electronAPI.proxyRequest === 'function') {
+        return await electronAPI.proxyRequest({
+          url: targetUrl,
+          method,
+          headers,
+          body,
+        });
+      }
+
       const proxyRes = await fetch('/api/workbuddy/proxy', {
         method: 'POST',
         headers: {

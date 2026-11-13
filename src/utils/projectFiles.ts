@@ -139,7 +139,7 @@ on:
       version:
         description: 'Release Version'
         required: false
-        default: 'v1.0.0'
+        default: 'v1.1.0'
 
 permissions:
   contents: write
@@ -154,24 +154,31 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
       - name: Install Dependencies
-        run: npm ci || npm install
+        run: npm install --legacy-peer-deps && npm install --legacy-peer-deps -D electron electron-builder
       - name: Build Web Dist
         run: npm run build
-      - name: Package Windows Desktop App (.exe)
+      - name: Package Windows (.exe)
         run: npx electron-builder --win --x64
         env:
           GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          tag_name: \${{ github.ref_name || inputs.version || 'v1.0.0' }}
-          name: WorkBuddy 账号日常工具 \${{ github.ref_name || inputs.version || 'v1.0.0' }}
-          files: release/*.exe
-          draft: false
-          prerelease: false`,
+          node-version: 20
+      - name: Install Dependencies
+        run: npm install --legacy-peer-deps && npm install --legacy-peer-deps -D electron electron-builder
+      - name: Build Web Dist
+        run: npm run build
+      - name: Package macOS (Intel x64 & Apple Silicon arm64)
+        run: npx electron-builder --mac --x64 --arm64
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}`,
   },
   {
     path: 'electron/main.cjs',
@@ -185,7 +192,7 @@ function createWindow() {
     height: 840,
     minWidth: 1024,
     minHeight: 700,
-    title: 'WorkBuddy 账号日常工具 v1.0.0',
+    title: 'WorkBuddy 账号日常工具 v1.1.0',
     backgroundColor: '#0f172a',
     webPreferences: {
       nodeIntegration: false,
@@ -215,11 +222,12 @@ app.on('window-all-closed', () => {
   {
     path: 'electron/preload.cjs',
     language: 'javascript',
-    content: `const { contextBridge } = require('electron');
+    content: `const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   isElectron: true,
-  appVersion: '1.0.0',
+  appVersion: '1.1.0',
+  proxyRequest: (payload) => ipcRenderer.invoke('workbuddy:proxy', payload),
 });`,
   },
   {
@@ -236,41 +244,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
     "electron/**/*",
     "package.json"
   ],
+  "artifactName": "\${productName}-\${version}-\${os}-\${arch}.\${ext}",
   "win": {
     "target": [
-      {
-        "target": "nsis",
-        "arch": ["x64"]
-      },
-      {
-        "target": "portable",
-        "arch": ["x64"]
-      }
+      { "target": "nsis", "arch": ["x64"] },
+      { "target": "portable", "arch": ["x64"] }
     ]
   },
-  "nsis": {
-    "oneClick": false,
-    "allowToChangeInstallationDirectory": true,
-    "createDesktopShortcut": true,
-    "createStartMenuShortcut": true,
-    "shortcutName": "WorkBuddy 账号日常工具"
+  "mac": {
+    "target": [
+      { "target": "dmg", "arch": ["x64", "arm64"] },
+      { "target": "zip", "arch": ["x64", "arm64"] }
+    ],
+    "category": "public.app-category.utilities"
   }
 }`,
   },
   {
     path: 'README.md',
     language: 'markdown',
-    content: `# WorkBuddy 账号日常工具 (workbuddyTools v1.0.0)
+    content: `# WorkBuddy 账号日常工具 (workbuddyTools v1.1.0)
 
-> 真实对接官方成长中心与猫猫旅行 API，支持多账号一键日常自动化与 Windows EXE 桌面客户端。
-
-## 🌟 核心功能
-- ⚡ **真实官方接口同步**：直连 \`https://www.workbuddy.cn\` 官方成长中心，真实同步成长任务进度、自动激活接取、自动领奖并增加积分
-- 🐱 **猫猫旅行自动化**：自动检测猫猫状态、出发旅行并一键领取旅行收益
-- 👥 **多账号集中管理**：支持快速添加/切换多个账号，支持 Cookie 与 Token 认证
-- 🖥️ **本地浏览器 + Windows EXE**：
-  - 本地浏览器运行：\`npm run dev\`
-  - GitHub 云端自动打包 EXE：推送 tag 或在 Actions 中一键运行构建
+> 真实对接官方成长中心与猫猫旅行 API，支持多账号一键日常自动化，支持 Windows EXE 与 macOS (Intel / M芯片) 桌面客户端。
 `,
   },
 ];
@@ -287,7 +282,7 @@ export async function downloadProjectZip(customFiles?: ProjectFile[]): Promise<v
   const url = URL.createObjectURL(content);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `workbuddyTools-v1.0.0.zip`;
+  a.download = `workbuddyTools-v1.1.0.zip`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
