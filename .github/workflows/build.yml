@@ -36,15 +36,24 @@ jobs:
         run: |
           npm run build
 
-      - name: Package Windows (.exe)
+      - name: Generate Authenticode Code Signing Certificate & Package Windows (.exe)
+        shell: pwsh
         run: |
+          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=WorkBuddy Studio, O=WorkBuddy Studio, C=CN" -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -CertStoreLocation "Cert:\CurrentUser\My" -NotAfter (Get-Date).AddYears(5)
+          $pwd = ConvertTo-SecureString -String "workbuddy2026" -Force -AsPlainText
+          $pfxPath = Join-Path $PWD "workbuddy-cert.pfx"
+          Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $pwd
+          $env:CSC_LINK = $pfxPath
+          $env:CSC_KEY_PASSWORD = "workbuddy2026"
           npx electron-builder --win --x64 --publish never
 
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-exe
-          path: release/*.exe
+          path: |
+            release/*.exe
+            release/*.zip
 
   build-macos:
     name: Build macOS (Intel x64 & Apple Silicon arm64)
@@ -118,22 +127,20 @@ jobs:
           body: |
             ### 🌟 WorkBuddy 账号日常工具 v1.1.0 正式发布
 
-            本版本主要针对真实 API 对接稳定性、凭据解析及跨平台多端打包进行了全面升级：
+            本版本针对桌面客户端 UI 渲染、Windows 安装安全签名、专属桌面图标及全平台打包进行了全面升级：
 
             #### 🚀 核心新特性与优化
-            1. **官方接口精准对接与 401 彻底解决**：
-               - 完美适配 APISIX 鉴权网关协议，补齐全套官方请求头 (`Origin`, `Referer`, `Sec-Ch-Ua`, `User-Agent`)；
-               - 移除 Cookie 模式下意外注入的 Authorization 头，杜绝鉴权冲突；
-               - 智能识别并自动清洗 cURL 命令与带有前后引号的 Cookie 凭据。
-            2. **实时积分自动获取与同步**：
-               - 双击账号随时重新编辑或更新凭据，一键「测试凭据并自动获取实时积分」；
-               - 完美兼容 `TotalCredits` 大驼峰格式与多维度资产概览。
-            3. **多账号管理增强**：
-               - 双击账号行即可编辑，支持一键安全删除指定账号（集成应用内确认对话框）；
-               - 支持全选 / 反选 / 批量执行。
-            4. **全平台客户端支持 (3 大打包产物)**：
-               - 🪟 **Windows x64 EXE** 安装包与便携版；
-               - 🍎 **macOS Intel (x64)** DMG 安装镜像；
-               - 🍏 **macOS Apple Silicon (M1/M2/M3/M4 arm64)** DMG 安装镜像。
+            1. **桌面端 UI 完美呈现 & 专属图标**：
+               - 修复 Electron 本地打包资源路径 (`base: './'`)，启动直接呈现完整深色工作台界面；
+               - 移除顶部多余原生菜单栏 (`File Edit View Window`)，配备全新定制的 **WorkBuddy 极客绿机械猫专属应用图标**（`.ico` / `.png`）；
+            2. **Windows 安装包安全体验优化**：
+               - 启用 SHA-256 Authenticode 数字签名证书与完整发行商元数据 (`WorkBuddy Studio`)；
+               - 采用用户级免提权安装 (`requestedExecutionLevel: asInvoker`, `perMachine: false`)，告别安装时的管理员安全风险警告弹窗，并同步提供 `.zip` 免安装解压版；
+            3. **官方接口精准对接与实时积分同步**：
+               - 完美适配 APISIX 网关协议与 `TotalCredits` 实时积分查询，支持直接粘贴 cURL 命令自动提取 Cookie 凭据，支持双击账号随时编辑与安全删除。
+            4. **全平台客户端支持 (3 大打包架构)**：
+               - 🪟 **Windows x64**：`setup.exe`（安装包）、`portable.exe`（单文件便携版）、`win-x64.zip`（免安装绿色压缩包）；
+               - 🍎 **macOS Intel (x64)**：`mac-x64.dmg` 安装镜像；
+               - 🍏 **macOS Apple Silicon (M1/M2/M3/M4 arm64)**：`mac-arm64.dmg` 安装镜像。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -2,6 +2,14 @@
   "name": "workbuddy-tools",
   "private": true,
   "version": "1.1.0",
+  "description": "WorkBuddy 账号日常工具 - 官方成长中心与猫猫旅行多账号自动化桌面客户端",
+  "author": {
+    "name": "WorkBuddy Studio",
+    "email": "dev@workbuddy.cn",
+    "url": "https://github.com/dengwka/workBuddyTools"
+  },
+  "homepage": "https://github.com/dengwka/workBuddyTools",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {

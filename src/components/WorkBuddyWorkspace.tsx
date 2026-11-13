@@ -43,7 +43,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
   // Accounts state with localStorage persistence
   const [accounts, setAccounts] = useState<WorkBuddyAccount[]>(() => {
     try {
-      const saved = localStorage.getItem('workbuddy_accounts_data_v1');
+      const saved = localStorage.getItem('workbuddy_accounts_data_v2');
       if (saved) return JSON.parse(saved);
     } catch {
       // fallback
@@ -105,7 +105,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
 
   // Sync to localStorage
   useEffect(() => {
-    localStorage.setItem('workbuddy_accounts_data_v1', JSON.stringify(accounts));
+    localStorage.setItem('workbuddy_accounts_data_v2', JSON.stringify(accounts));
     setStats((prev) => ({
       ...prev,
       total: accounts.length,
@@ -536,8 +536,17 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
       {/* 1. Window Title Bar & Header */}
       <div className="flex items-center justify-between px-4 py-2.5 bg-slate-950/90 border-b border-slate-800">
         <div className="flex items-center gap-3">
-          {/* WorkBuddy Icon */}
-          <div className="w-6 h-6 rounded-md bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-white shadow-sm">
+          {/* WorkBuddy Custom App Icon */}
+          <div className="w-6 h-6 rounded-md bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-white shadow-sm overflow-hidden shrink-0">
+            <img
+              src="./icon.png"
+              alt="WorkBuddy"
+              referrerPolicy="no-referrer"
+              className="w-full h-full object-cover"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+              }}
+            />
             <span className="text-xs font-bold font-mono">W</span>
           </div>
           <div className="flex items-center gap-2">

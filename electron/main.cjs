@@ -1,5 +1,5 @@
 // Electron Main Process for WorkBuddy Tools
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu } = require('electron');
 const path = require('path');
 
 // Native Node.js fetch proxy for WorkBuddy desktop app (bypasses browser CORS & enforces official headers)
@@ -75,21 +75,32 @@ ipcMain.handle('workbuddy:proxy', async (_event, { url, method = 'GET', headers 
 });
 
 function createWindow() {
+  // Remove default ugly "File Edit View Window" menu bar on Windows/Linux
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null);
+  }
+
+  const iconFile = process.platform === 'win32' ? 'icons/icon.ico' : 'icons/icon.png';
+
   const win = new BrowserWindow({
-    width: 1280,
-    height: 840,
+    width: 1320,
+    height: 860,
     minWidth: 1024,
-    minHeight: 700,
+    minHeight: 720,
     frame: true,
+    autoHideMenuBar: true,
     titleBarStyle: 'default',
     title: 'WorkBuddy 账号日常工具 v1.1.0',
-    backgroundColor: '#0f172a',
+    icon: path.join(__dirname, iconFile),
+    backgroundColor: '#020617',
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.cjs'),
     },
   });
+
+  win.setMenuBarVisibility(false);
 
   // Open external links in default browser
   win.webContents.setWindowOpenHandler(({ url }) => {

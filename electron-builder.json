@@ -1,6 +1,7 @@
 {
   "appId": "com.workbuddy.tools",
   "productName": "WorkBuddy 账号日常工具",
+  "copyright": "Copyright © 2026 WorkBuddy Studio. All rights reserved.",
   "directories": {
     "output": "release"
   },
@@ -10,6 +11,8 @@
     "package.json"
   ],
   "win": {
+    "icon": "electron/icons/icon.ico",
+    "requestedExecutionLevel": "asInvoker",
     "artifactName": "workbuddyTools-${version}-win-${arch}-${target}.${ext}",
     "target": [
       {
@@ -19,21 +22,31 @@
       {
         "target": "portable",
         "arch": ["x64"]
+      },
+      {
+        "target": "zip",
+        "arch": ["x64"]
       }
     ]
   },
   "nsis": {
     "oneClick": false,
+    "perMachine": false,
+    "allowElevation": false,
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
     "shortcutName": "WorkBuddy 账号日常工具",
+    "installerIcon": "electron/icons/icon.ico",
+    "uninstallerIcon": "electron/icons/icon.ico",
+    "installerHeaderIcon": "electron/icons/icon.ico",
     "artifactName": "workbuddyTools-${version}-win-${arch}-setup.${ext}"
   },
   "portable": {
     "artifactName": "workbuddyTools-${version}-win-${arch}-portable.${ext}"
   },
   "mac": {
+    "icon": "electron/icons/icon.png",
     "artifactName": "workbuddyTools-${version}-mac-${arch}.${ext}",
     "target": [
       {
@@ -50,6 +63,7 @@
     "gatekeeperAssess": false
   },
   "dmg": {
+    "icon": "electron/icons/icon.png",
     "contents": [
       {
         "x": 130,

@@ -37,8 +37,17 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-15 flex items-center justify-between gap-4">
           {/* Brand & Wordmark */}
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center text-white font-bold font-mono text-sm shadow-md shadow-emerald-950/40">
-              W
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center text-white font-bold font-mono text-sm shadow-md shadow-emerald-950/40 overflow-hidden shrink-0">
+              <img
+                src="./icon.png"
+                alt="WorkBuddy Icon"
+                referrerPolicy="no-referrer"
+                className="w-full h-full object-cover"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                }}
+              />
+              <span>W</span>
             </div>
             <div>
               <div className="flex items-center gap-2">
