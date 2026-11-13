@@ -67,11 +67,16 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
     setTestResult(null);
 
     try {
-      const headerCount = cleaned.extraHeaders ? Object.keys(cleaned.extraHeaders).length : 0;
+      const effectiveExtraHeaders =
+        cleaned.isExtractedFromCurl && cleaned.extraHeaders && Object.keys(cleaned.extraHeaders).length > 0
+          ? { ...(account.extraHeaders || {}), ...cleaned.extraHeaders }
+          : { ...(account.extraHeaders || {}), ...(cleaned.extraHeaders || {}) };
+
+      const headerCount = Object.keys(effectiveExtraHeaders).length;
       const summaryRes = await workbuddyRealApi.getResourceSummary(
         cleaned.credentials,
         cleaned.authType,
-        cleaned.extraHeaders
+        effectiveExtraHeaders
       );
       
       if (summaryRes.ok && summaryRes.data) {
@@ -87,7 +92,7 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
           const cleanCredit = roundPoints(liveCredit);
           setPoints(cleanCredit);
           const extraNote = cleaned.isExtractedFromCurl
-            ? `已自动提取 cURL 凭据${headerCount > 0 ? `及 ${headerCount} 个请求头` : ''}${cleaned.autoCompletedRealm ? ' (已自动补全 copilot 认证域)' : ''}！`
+            ? `已自动从 cURL 提取 Cookie${headerCount > 0 ? ` 及 ${headerCount} 个请求头` : ''}${cleaned.autoCompletedRealm ? ' (已补全 copilot 域)' : ''}！`
             : cleaned.autoCompletedRealm
             ? '已自动补全 copilot 认证域并验证成功！'
             : '接口验证成功！';
@@ -100,11 +105,11 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
         }
       }
 
-      // If resource summary is empty or failed, also try tasks endpoint to verify token validity
+      // If resource summary is empty or failed, also try tasks & accounts endpoints to verify token validity
       const taskRes = await workbuddyRealApi.getGrowthTasks(
         cleaned.credentials,
         cleaned.authType,
-        cleaned.extraHeaders
+        effectiveExtraHeaders
       );
       if (taskRes.ok) {
         setTestResult({
@@ -114,7 +119,20 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
         return;
       }
 
-      if (summaryRes.status === 401 || taskRes.status === 401) {
+      const userRes = await workbuddyRealApi.getUserInfo(
+        cleaned.credentials,
+        cleaned.authType,
+        effectiveExtraHeaders
+      );
+      if (userRes.ok || summaryRes.ok) {
+        setTestResult({
+          success: true,
+          message: '账号身份鉴权通过！接口访问正常。',
+        });
+        return;
+      }
+
+      if (summaryRes.status === 401 || taskRes.status === 401 || userRes.status === 401) {
         setTestResult({
           success: false,
           message:
@@ -123,7 +141,7 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
       } else {
         setTestResult({
           success: false,
-          message: `接口响应状态码 ${summaryRes.status || taskRes.status}，请核对凭据或稍后重试。`,
+          message: `接口响应状态码 ${summaryRes.status || taskRes.status || userRes.status}，请核对凭据或稍后重试。`,
         });
       }
     } catch (err: unknown) {
@@ -144,6 +162,10 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
     }
 
     const cleaned = extractCleanCredentials(credentials, authType);
+    const mergedExtraHeaders = {
+      ...(account.extraHeaders || {}),
+      ...(cleaned.extraHeaders || {}),
+    };
 
     const updated: WorkBuddyAccount = {
       ...account,
@@ -151,7 +173,7 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
       region,
       authType: cleaned.authType,
       credentials: cleaned.credentials,
-      extraHeaders: cleaned.extraHeaders || account.extraHeaders,
+      extraHeaders: Object.keys(mergedExtraHeaders).length > 0 ? mergedExtraHeaders : undefined,
       proxyUrl: proxyUrl.trim() || undefined,
       points: roundPoints(points),
       status: testResult?.success ? '正常' : account.status,
@@ -289,12 +311,36 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
               }}
               placeholder={
                 authType === 'cookie'
-                  ? '粘贴在 workbuddy.cn 浏览器复制的完整 Cookie 字符串 (包含 session / session_2 / qcloud_visitId 等)'
+                  ? '粘贴在 workbuddy.cn 浏览器复制的完整 Cookie 或 cURL 命令 (保存后会自动提取为 Cookie 并保留请求头)'
                   : '粘贴 Authorization: Bearer 后面的 Token 字符串'
               }
               rows={4}
               className="w-full bg-slate-950 border border-slate-700/80 rounded-xl p-3 text-xs font-mono text-slate-200 focus:outline-none focus:border-emerald-500 resize-none leading-relaxed"
             />
+            {(() => {
+              const sessTsMatch = credentials.match(/session=[^|;\s]+\|(\d{10})\|/);
+              const expDateStr = sessTsMatch
+                ? new Date(Number(sessTsMatch[1]) * 1000).toLocaleString('zh-CN', {
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })
+                : '';
+              const extraCount = Object.keys(account.extraHeaders || {}).length;
+              return (
+                <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400">
+                  <span>
+                    说明：粘贴 cURL 后会自动提取为纯净 Cookie{extraCount > 0 ? `（已保留 ${extraCount} 个扩展请求头）` : ''}，可随时直接覆盖新 cURL
+                  </span>
+                  {expDateStr && (
+                    <span className="font-mono text-amber-300/90">
+                      当前 session 预计有效期至：{expDateStr}
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Test and Live Points Sync Button */}
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2">

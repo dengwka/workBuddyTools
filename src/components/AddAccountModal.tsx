@@ -101,7 +101,20 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
         return;
       }
 
-      if (summaryRes.status === 401 || taskRes.status === 401) {
+      const userRes = await workbuddyRealApi.getUserInfo(
+        cleaned.credentials,
+        cleaned.authType,
+        cleaned.extraHeaders
+      );
+      if (userRes.ok || summaryRes.ok) {
+        setTestResult({
+          success: true,
+          message: '账号身份鉴权通过！接口访问正常。',
+        });
+        return;
+      }
+
+      if (summaryRes.status === 401 || taskRes.status === 401 || userRes.status === 401) {
         setTestResult({
           success: false,
           message:
@@ -110,7 +123,7 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
       } else {
         setTestResult({
           success: false,
-          message: `接口响应状态码 ${summaryRes.status || taskRes.status}，请核对凭据或稍后重试。`,
+          message: `接口响应状态码 ${summaryRes.status || taskRes.status || userRes.status}，请核对凭据或稍后重试。`,
         });
       }
     } catch (err: unknown) {

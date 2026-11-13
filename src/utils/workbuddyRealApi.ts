@@ -386,20 +386,21 @@ export class WorkBuddyRealApi {
       'X-Submitted-From': 'web',
       'X-Request-ID': generateRequestId(),
       Origin: 'https://www.workbuddy.cn',
-      Referer:
-        targetUrl.includes('/portal/') || targetUrl.includes('/console/') || targetUrl.includes('/v2/user-asset/')
-          ? 'https://www.workbuddy.cn/app'
-          : 'https://www.workbuddy.cn/profile/growth-center',
+      Referer: targetUrl.includes('/billing')
+        ? 'https://www.workbuddy.cn/profile/plans-usage'
+        : targetUrl.includes('/portal/') || targetUrl.includes('/console/') || targetUrl.includes('/v2/user-asset/')
+        ? 'https://www.workbuddy.cn/app'
+        : 'https://www.workbuddy.cn/profile/growth-center',
       ...mergedExtra,
     };
 
     if (finalAuthType === 'cookie') {
-      // Never send desktop platform/UA headers with Web Cookie auth (APISIX returns 401 when X-Client-Platform=desktop lacks desktop Bearer JWT)
+      // Never send desktop platform/UA headers or stale Bearer Authorization with Web Cookie auth
       for (const k of Object.keys(headers)) {
         const lower = k.toLowerCase();
         if (lower === 'x-client-platform') headers[k] = 'web';
         if (lower === 'x-submitted-from') headers[k] = 'web';
-        if (lower === 'x-client-version' || lower === 'x-app-version') delete headers[k];
+        if (lower === 'authorization' || lower === 'x-client-version' || lower === 'x-app-version') delete headers[k];
         if (lower === 'user-agent' && String(headers[k]).includes('WorkBuddy/')) delete headers[k];
       }
     }
