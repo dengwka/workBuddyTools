@@ -469,6 +469,220 @@ async function startServer() {
     }
   });
 
+  // Real WorkBuddy Cloud Sandbox ACP Turn (StreamableHTTP SSE bootstrap + session/prompt)
+  app.post('/api/workbuddy/acp-turn', async (req: Request, res: Response) => {
+    const { link, token, sessionId, cwd = '/workspace', promptText, requestId } = req.body || {};
+    if (!link || !token || !sessionId || !promptText) {
+      return res.status(400).json({ ok: false, bootstrapOk: false, promptOk: false, detail: '缺少沙箱 ACP 连接参数' });
+    }
+
+    const sseController = new AbortController();
+    const overallTimer = setTimeout(() => sseController.abort(), 22000);
+
+    try {
+      const parsedLink = new URL(String(link));
+      parsedLink.pathname = parsedLink.pathname.replace(/\/acp\/?$/, '/acp/bootstrap');
+      const bootstrapUrl = parsedLink.toString();
+      const bootstrapBody = {
+        initialize: {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: 1,
+            clientCapabilities: {},
+          },
+        },
+        sessionNew: {
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'session/new',
+          params: {
+            sessionId,
+            cwd: cwd || '/workspace',
+            mcpServers: [],
+          },
+        },
+      };
+
+      const sseRes = await fetch(bootstrapUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept: 'text/event-stream',
+          'X-Request-ID': requestId || `req_${Date.now()}`,
+        },
+        body: JSON.stringify(bootstrapBody),
+        signal: sseController.signal,
+      });
+
+      if (!sseRes.ok) {
+        return res.json({
+          ok: false,
+          bootstrapOk: false,
+          promptOk: false,
+          status: sseRes.status,
+          detail: `ACP bootstrap HTTP ${sseRes.status}`,
+        });
+      }
+
+      const connId = sseRes.headers.get('acp-connection-id') || sseRes.headers.get('Acp-Connection-Id') || '';
+      if (!connId) {
+        return res.json({
+          ok: false,
+          bootstrapOk: false,
+          promptOk: false,
+          status: sseRes.status,
+          detail: 'ACP bootstrap 未返回 Acp-Connection-Id',
+        });
+      }
+
+      const reader = sseRes.body && typeof sseRes.body.getReader === 'function' ? sseRes.body.getReader() : null;
+      const decoder = new TextDecoder();
+      let sseBuffer = '';
+      let bootstrapDone = false;
+      let promptDone = false;
+      let gotAssistantOutput = false;
+      let activeSessionId = String(sessionId);
+
+      const readPromise = (async () => {
+        if (!reader) return;
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            sseBuffer += decoder.decode(value, { stream: true });
+            const lines = sseBuffer.split(/\r?\n/);
+            sseBuffer = lines.pop() || '';
+            for (const line of lines) {
+              if (!line.startsWith('data:')) continue;
+              const raw = line.slice(5).trim();
+              if (!raw) continue;
+              try {
+                const msg = JSON.parse(raw);
+                if (msg.id === 2 && msg.result?.sessionId) {
+                  activeSessionId = String(msg.result.sessionId);
+                }
+                if (msg.id === 1 || msg.id === 2) {
+                  bootstrapDone = true;
+                }
+                if (msg.method === 'session/update' || msg.params?.update) {
+                  gotAssistantOutput = true;
+                }
+                if (msg.id === 3) {
+                  promptDone = true;
+                }
+              } catch {
+                // ignore
+              }
+            }
+            if (promptDone) break;
+          }
+        } catch {
+          // aborted cleanly
+        }
+      })();
+
+      const bootDeadline = Date.now() + 3000;
+      while (!bootstrapDone && Date.now() < bootDeadline) {
+        await new Promise((r) => setTimeout(r, 120));
+      }
+
+      const promptBody = {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'session/prompt',
+        params: {
+          sessionId: activeSessionId,
+          prompt: [{ type: 'text', text: String(promptText) }],
+          _meta: {
+            'codebuddy.ai': {
+              telemetryClientInfo: {
+                ideType: 'desktop',
+                ideName: 'WorkBuddy',
+              },
+            },
+          },
+        },
+      };
+
+      const promptRes = await fetch(String(link), {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          'Acp-Connection-Id': connId,
+          'X-Request-ID': requestId || `req_${Date.now()}`,
+        },
+        body: JSON.stringify(promptBody),
+        signal: sseController.signal,
+      });
+
+      if (promptRes.ok) {
+        const ct = (promptRes.headers.get('content-type') || '').toLowerCase();
+        if (ct.includes('application/json')) {
+          const pj = await promptRes.json().catch(() => null);
+          if (pj && (pj.result || pj.id === 3)) promptDone = true;
+        } else if (ct.includes('text/event-stream') && promptRes.body?.getReader) {
+          const pr = promptRes.body.getReader();
+          const waitEnd = Date.now() + 8000;
+          while (Date.now() < waitEnd && !promptDone) {
+            const { done, value } = await Promise.race([
+              pr.read(),
+              new Promise<{ done: boolean; value: undefined }>((r) =>
+                setTimeout(() => r({ done: true, value: undefined }), 4000)
+              ),
+            ]);
+            if (done) break;
+            if (value) {
+              const chunkText = decoder.decode(value, { stream: true });
+              if (chunkText.includes('stopReason') || chunkText.includes('"id":3')) {
+                promptDone = true;
+              }
+              if (chunkText.includes('session/update') || chunkText.includes('agent_message')) {
+                gotAssistantOutput = true;
+              }
+            }
+          }
+          pr.cancel().catch(() => {});
+        }
+      }
+
+      const replyDeadline = Date.now() + 6000;
+      while (!promptDone && !gotAssistantOutput && Date.now() < replyDeadline) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+
+      sseController.abort();
+      await Promise.race([readPromise, new Promise((r) => setTimeout(r, 300))]);
+
+      return res.json({
+        ok: promptRes.ok,
+        bootstrapOk: true,
+        promptOk: promptRes.ok,
+        gotReply: promptDone || gotAssistantOutput,
+        connectionId: connId,
+        status: promptRes.status,
+        detail: promptRes.ok
+          ? promptDone || gotAssistantOutput
+            ? 'ACP 沙箱对话已发送并收到模型响应'
+            : 'ACP 沙箱 session/prompt 已投递成功'
+          : `ACP session/prompt 返回 HTTP ${promptRes.status}`,
+      });
+    } catch (err: unknown) {
+      return res.status(500).json({
+        ok: false,
+        bootstrapOk: false,
+        promptOk: false,
+        detail: err instanceof Error ? err.message : 'ACP turn failed',
+      });
+    } finally {
+      clearTimeout(overallTimer);
+    }
+  });
+
   // Reliable GitHub Latest Release resolver (avoids frontend API rate-limit & 404 URLs)
   app.get('/api/update/latest', async (_req: Request, res: Response) => {
     try {

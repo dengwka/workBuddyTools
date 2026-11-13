@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getSystemInfo: () => ipcRenderer.invoke('workbuddy:get-system-info'),
   checkLatestRelease: () => ipcRenderer.invoke('workbuddy:check-latest-release'),
   downloadAndInstallUpdate: (payload) => ipcRenderer.invoke('workbuddy:download-and-install', payload),
+  runAcpTurn: (payload) => ipcRenderer.invoke('workbuddy:acp-turn', payload),
   onUpdateProgress: (callback) => {
     const listener = (_event, data) => callback(data);
     ipcRenderer.on('workbuddy:update-progress', listener);
