@@ -374,7 +374,7 @@ function createWindow() {
     frame: true,
     autoHideMenuBar: true,
     titleBarStyle: 'default',
-    title: 'WorkBuddy 账号日常工具 v1.2.0',
+    title: 'WorkBuddy 账号日常工具 v1.2.1',
     icon: path.join(__dirname, iconFile),
     backgroundColor: '#020617',
     webPreferences: {

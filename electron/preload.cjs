@@ -5,7 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   arch: process.arch,
   isElectron: true,
-  appVersion: '1.2.0',
+  appVersion: '1.2.1',
   proxyRequest: (payload) => ipcRenderer.invoke('workbuddy:proxy', payload),
   openExternal: (url) => ipcRenderer.invoke('workbuddy:open-external', url),
   getSystemInfo: () => ipcRenderer.invoke('workbuddy:get-system-info'),
