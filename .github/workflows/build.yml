@@ -39,12 +39,19 @@ jobs:
       - name: Generate Authenticode Code Signing Certificate & Package Windows (.exe)
         shell: pwsh
         run: |
-          $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=WorkBuddy Studio, O=WorkBuddy Studio, C=CN" -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -CertStoreLocation "Cert:\CurrentUser\My" -NotAfter (Get-Date).AddYears(5)
-          $pwd = ConvertTo-SecureString -String "workbuddy2026" -Force -AsPlainText
-          $pfxPath = Join-Path $PWD "workbuddy-cert.pfx"
-          Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $pwd
-          $env:CSC_LINK = $pfxPath
-          $env:CSC_KEY_PASSWORD = "workbuddy2026"
+          try {
+            $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=WorkBuddy Studio, O=WorkBuddy Studio, C=CN" -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -CertStoreLocation "Cert:\LocalMachine\My" -NotAfter (Get-Date).AddYears(5)
+            $certPwd = ConvertTo-SecureString -String "workbuddy2026" -Force -AsPlainText
+            $pfxPath = Join-Path (Get-Location).Path "workbuddy-cert.pfx"
+            Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $certPwd | Out-Null
+            if (Test-Path $pfxPath) {
+              $env:CSC_LINK = $pfxPath
+              $env:CSC_KEY_PASSWORD = "workbuddy2026"
+              Write-Host "Authenticode certificate generated at $pfxPath"
+            }
+          } catch {
+            Write-Warning "Skipping self-signed certificate generation: $_"
+          }
           npx electron-builder --win --x64 --publish never
 
       - name: Upload Windows Artifact
