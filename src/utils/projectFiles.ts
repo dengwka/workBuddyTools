@@ -192,7 +192,7 @@ function createWindow() {
     height: 840,
     minWidth: 1024,
     minHeight: 700,
-    title: 'WorkBuddy 自动化工具 v1.3.1',
+    title: 'WorkBuddy 自动化工具 v1.3.2',
     backgroundColor: '#0f172a',
     webPreferences: {
       nodeIntegration: false,
@@ -263,7 +263,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   {
     path: 'README.md',
     language: 'markdown',
-    content: `# WorkBuddy 自动化工具 (workbuddyTools v1.3.1)
+    content: `# WorkBuddy 自动化工具 (workbuddyTools v1.3.2)
 
 > 真实对接官方成长中心与猫猫旅行 API，支持多账号一键自动化，支持 Windows EXE 与 macOS (Intel / M芯片) 桌面客户端。
 `,

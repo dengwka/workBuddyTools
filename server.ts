@@ -65,7 +65,7 @@ async function fetchLatestReleaseInfo() {
     const apiRes = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
       headers: {
         Accept: 'application/vnd.github+json',
-        'User-Agent': 'WorkBuddyTools-Updater/1.3.1',
+        'User-Agent': 'WorkBuddyTools-Updater/1.3.2',
       },
       signal: AbortSignal.timeout(10000),
     });
@@ -89,7 +89,7 @@ async function fetchLatestReleaseInfo() {
     try {
       const res = await fetch(pageUrl, {
         redirect: 'follow',
-        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.1' },
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.2' },
         signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) continue;
@@ -107,7 +107,7 @@ async function fetchLatestReleaseInfo() {
         : `https://github.com/${GITHUB_REPO}/releases/expanded_assets/${tagName}`;
 
       const expRes = await fetch(expandedUrl, {
-        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.1' },
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.2' },
         signal: AbortSignal.timeout(10000),
       });
       const expHtml = expRes.ok ? await expRes.text() : html;
@@ -205,7 +205,7 @@ async function runServerStreamUpdate(job: UpdateJobState, downloadUrl: string, m
       try {
         res = await fetch(candidate.url, {
           redirect: 'follow',
-          headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.1' },
+          headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.2' },
           signal: controller.signal,
         });
       } finally {
@@ -356,16 +356,52 @@ async function startServer() {
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-  // Domain Cookie Jar (mirrors PostAPI Cookie Manager behavior for workbuddy.cn)
-  const domainCookieJar: Record<string, string> = {
-    cb_login_mode: 'v2',
-    cb_login_realm: 'copilot',
-  };
+  function ensureStatelessLoginRealmCookies(cookieStr: string): string {
+    const currentCookie = String(cookieStr || '').trim();
+    if (!currentCookie || !currentCookie.includes('session=')) {
+      return currentCookie;
+    }
+    const missingPairs: string[] = [];
+    if (!/(?:^|;\s*)cb_login_mode=/i.test(currentCookie)) {
+      missingPairs.push('cb_login_mode=v2');
+    }
+    if (!/(?:^|;\s*)cb_login_realm=/i.test(currentCookie)) {
+      missingPairs.push('cb_login_realm=copilot');
+    }
+    return missingPairs.length > 0 ? `${missingPairs.join('; ')}; ${currentCookie}` : currentCookie;
+  }
 
-  // API Proxy Route for WorkBuddy to bypass browser CORS
+  function isAllowedWorkBuddyProxyUrl(rawUrl: string): boolean {
+    if (typeof rawUrl !== 'string') return false;
+    try {
+      const parsed = new URL(rawUrl);
+      if (parsed.protocol !== 'https:') return false;
+      const host = parsed.hostname.toLowerCase();
+      return (
+        host === 'www.workbuddy.cn' ||
+        host.endsWith('.workbuddy.cn') ||
+        host === 'api.skillhub.cn' ||
+        host.endsWith('.codebuddy.cn') ||
+        host.endsWith('.woa.com') ||
+        host.endsWith('.tencentcs.com') ||
+        host.endsWith('.myqcloud.com')
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  // API Proxy Route for WorkBuddy to bypass browser CORS (strictly stateless per-request for account isolation)
   app.post('/api/workbuddy/proxy', async (req: Request, res: Response) => {
     try {
       const { url, method = 'GET', headers = {}, body } = req.body;
+      if (!isAllowedWorkBuddyProxyUrl(url)) {
+        return res.status(400).json({ error: 'Invalid WorkBuddy URL' });
+      }
+
+      const parsedTarget = new URL(url);
+      const isWorkBuddyOrigin =
+        parsedTarget.hostname === 'www.workbuddy.cn' || parsedTarget.hostname.endsWith('.workbuddy.cn');
 
       // Default official browser headers
       const baseHeaders: Record<string, string> = {
@@ -376,16 +412,24 @@ async function startServer() {
         'Cache-Control': 'no-cache',
         'Content-Type': 'application/json',
         'X-Client-Platform': 'web',
-        Origin: 'https://www.workbuddy.cn',
-        Referer: url.includes('/billing')
-          ? 'https://www.workbuddy.cn/profile/plans-usage'
-          : 'https://www.workbuddy.cn/profile/growth-center',
+        ...(isWorkBuddyOrigin
+          ? {
+              Origin: 'https://www.workbuddy.cn',
+              Referer: url.includes('/billing')
+                ? 'https://www.workbuddy.cn/profile/plans-usage'
+                : url.includes('/app') || url.includes('/portal') || url.includes('/console')
+                ? 'https://www.workbuddy.cn/app'
+                : 'https://www.workbuddy.cn/profile/growth-center',
+              'Sec-Fetch-Site': 'same-origin',
+            }
+          : {
+              'Sec-Fetch-Site': 'cross-site',
+            }),
         'Sec-Ch-Ua': '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
         'Sec-Ch-Ua-Mobile': '?0',
         'Sec-Ch-Ua-Platform': '"Windows"',
         'Sec-Fetch-Dest': 'empty',
         'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
       };
 
       // Case-insensitive merge so user cURL headers (-H) cleanly override defaults
@@ -395,7 +439,7 @@ async function startServer() {
         lowerToCanonical[k.toLowerCase()] = k;
       }
 
-      for (const [rawKey, rawVal] of Object.entries(headers as Record<string, string>)) {
+      for (const [rawKey, rawVal] of Object.entries((headers || {}) as Record<string, string>)) {
         if (rawVal === undefined || rawVal === null) continue;
         const lower = rawKey.toLowerCase();
         if (lower === 'host' || lower === 'content-length' || lower === 'connection') continue;
@@ -408,20 +452,10 @@ async function startServer() {
         }
       }
 
-      // Ensure Cookie Jar defaults (cb_login_mode=v2; cb_login_realm=copilot) are merged when session is present
+      // Statelessly inject missing copilot realm cookies for the current account only
       const cookieKey = lowerToCanonical['cookie'] || 'Cookie';
-      const currentCookie = requestHeaders[cookieKey] || '';
-      if (currentCookie && currentCookie.includes('session=')) {
-        const missingPairs: string[] = [];
-        for (const [ck, cv] of Object.entries(domainCookieJar)) {
-          const regex = new RegExp(`(?:^|;\\s*)${ck}=`, 'i');
-          if (!regex.test(currentCookie)) {
-            missingPairs.push(`${ck}=${cv}`);
-          }
-        }
-        if (missingPairs.length > 0) {
-          requestHeaders[cookieKey] = `${missingPairs.join('; ')}; ${currentCookie}`;
-        }
+      if (requestHeaders[cookieKey]) {
+        requestHeaders[cookieKey] = ensureStatelessLoginRealmCookies(requestHeaders[cookieKey]);
       }
 
       const fetchOptions: RequestInit = {
@@ -435,23 +469,6 @@ async function startServer() {
       }
 
       const wbResponse = await fetch(url, fetchOptions);
-
-      // Update domainCookieJar from response Set-Cookie headers
-      const setCookies =
-        typeof (wbResponse.headers as any).getSetCookie === 'function'
-          ? (wbResponse.headers as any).getSetCookie()
-          : [wbResponse.headers.get('set-cookie')].filter(Boolean);
-      for (const sc of setCookies) {
-        if (typeof sc === 'string') {
-          const firstPart = sc.split(';')[0]?.trim();
-          if (firstPart && firstPart.includes('=')) {
-            const [k, v] = firstPart.split('=', 2);
-            if (k && v && k.trim() !== 'session' && k.trim() !== 'session_2') {
-              domainCookieJar[k.trim()] = v.trim();
-            }
-          }
-        }
-      }
 
       const contentType = wbResponse.headers.get('content-type') || '';
 

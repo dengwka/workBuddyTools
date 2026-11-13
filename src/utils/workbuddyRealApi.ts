@@ -39,24 +39,74 @@ const accountIdentityCache: Record<
   { uid: string; nickname: string; machineId: string; enterpriseId?: string; enterpriseUserName?: string }
 > = {};
 
+function hashFullString(input: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input.charCodeAt(i);
+    h1 ^= ch;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= ch + (i & 0xff);
+    h2 = Math.imul(h2, 0x85ebca6b);
+  }
+  return `${(h1 >>> 0).toString(16).padStart(8, '0')}${(h2 >>> 0).toString(16).padStart(8, '0')}_${input.length}`;
+}
+
 function getCredentialCacheKey(cred: string): string {
   const trimmed = (cred || '').trim();
-  const sessMatch = trimmed.match(/session=([^;\s]{16,64})/);
+  const sessMatch = trimmed.match(/(?:^|;\s*)session=([^;\s]+)/);
   if (sessMatch && sessMatch[1]) {
-    return `sess_${sessMatch[1]}`;
+    return `sess_${hashFullString(sessMatch[1])}`;
   }
-  return `cred_${trimmed.slice(0, 64)}`;
+  return `cred_${hashFullString(trimmed)}`;
 }
 
 function getStableMachineId(cred: string): string {
   const key = getCredentialCacheKey(cred);
-  let hash = 0;
-  for (let i = 0; i < key.length; i++) {
-    hash = (hash << 5) - hash + key.charCodeAt(i);
-    hash |= 0;
+  const hex = key.replace(/[^a-f0-9]/gi, '').padEnd(16, '0').slice(0, 16);
+  return `${hex.slice(0, 8)}-7b9c-4d2e-9a1f-${hex.slice(0, 12)}`;
+}
+
+export function roundPoints(val: unknown): number {
+  const num = Number(val);
+  if (!Number.isFinite(num)) return 0;
+  return Math.round(num * 100) / 100;
+}
+
+export function formatAccountLabel(accountId: string, nickname?: string): string {
+  const cleanId = String(accountId || '').trim();
+  const shortId = cleanId.length > 12 ? cleanId.slice(0, 8) : cleanId;
+  const cleanNick = String(nickname || '').trim();
+  if (cleanNick && cleanNick !== cleanId) {
+    return shortId ? `${cleanNick} (${shortId})` : cleanNick;
   }
-  const hex = Math.abs(hash).toString(16).padStart(8, '0');
-  return `${hex}-7b9c-4d2e-9a1f-${hex}a3b5`;
+  return shortId || cleanId || '未知账号';
+}
+
+export function extractIdFromJumpUrl(jumpUrl?: string, keys: string[] = ['expert_id', 'expertId', 'id', 'agent_id']): string {
+  if (!jumpUrl || typeof jumpUrl !== 'string') return '';
+  try {
+    const url = new URL(jumpUrl, 'https://www.workbuddy.cn');
+    for (const k of keys) {
+      const val = url.searchParams.get(k);
+      if (val && val.trim()) return val.trim();
+    }
+  } catch {
+    // try regex fallback
+  }
+  for (const k of keys) {
+    const m = jumpUrl.match(new RegExp(`[?&]${k}=([^&#]+)`));
+    if (m?.[1]) return decodeURIComponent(m[1]).trim();
+  }
+  return '';
+}
+
+function generateRequestId(): string {
+  let out = '';
+  for (let i = 0; i < 32; i++) {
+    out += Math.floor(Math.random() * 16).toString(16);
+  }
+  return out;
 }
 
 export function saveExtraHeadersForCredential(cred: string, headers?: Record<string, string>) {
@@ -298,8 +348,21 @@ export class WorkBuddyRealApi {
     credentials: string,
     authType: 'cookie' | 'token',
     explicitExtraHeaders?: Record<string, string>,
-    skipRealmAutoComplete = false
+    skipRealmAutoComplete = false,
+    targetUrl = ''
   ): Record<string, string> {
+    const isExternalPublicUrl =
+      targetUrl.startsWith('http') &&
+      !targetUrl.startsWith('https://www.workbuddy.cn') &&
+      !targetUrl.includes('.workbuddy.cn');
+
+    if (isExternalPublicUrl) {
+      return {
+        Accept: 'application/json, text/plain, */*',
+        ...(explicitExtraHeaders || {}),
+      };
+    }
+
     const cleanInfo = extractCleanCredentials(credentials, authType);
     let clean = cleanInfo.credentials;
     if (skipRealmAutoComplete && clean.startsWith('cb_login_mode=v2; cb_login_realm=copilot; ')) {
@@ -320,10 +383,26 @@ export class WorkBuddyRealApi {
       'Accept-Language': 'zh-CN,zh;q=0.9,zh-TW;q=0.8,en;q=0.7',
       'Cache-Control': 'no-cache',
       'X-Client-Platform': 'web',
+      'X-Submitted-From': 'web',
+      'X-Request-ID': generateRequestId(),
       Origin: 'https://www.workbuddy.cn',
-      Referer: 'https://www.workbuddy.cn/profile/growth-center',
+      Referer:
+        targetUrl.includes('/portal/') || targetUrl.includes('/console/') || targetUrl.includes('/v2/user-asset/')
+          ? 'https://www.workbuddy.cn/app'
+          : 'https://www.workbuddy.cn/profile/growth-center',
       ...mergedExtra,
     };
+
+    if (finalAuthType === 'cookie') {
+      // Never send desktop platform/UA headers with Web Cookie auth (APISIX returns 401 when X-Client-Platform=desktop lacks desktop Bearer JWT)
+      for (const k of Object.keys(headers)) {
+        const lower = k.toLowerCase();
+        if (lower === 'x-client-platform') headers[k] = 'web';
+        if (lower === 'x-submitted-from') headers[k] = 'web';
+        if (lower === 'x-client-version' || lower === 'x-app-version') delete headers[k];
+        if (lower === 'user-agent' && String(headers[k]).includes('WorkBuddy/')) delete headers[k];
+      }
+    }
 
     if (finalAuthType === 'token') {
       const token = clean.replace(/^Bearer\s+/i, '');
@@ -349,7 +428,7 @@ export class WorkBuddyRealApi {
     skipRealmAutoComplete = false
   ): Promise<{ ok: boolean; status: number; data: any }> {
     const targetUrl = path.startsWith('http') ? path : `${this.baseUrl}${path}`;
-    const headers = this.getHeaders(credentials, authType, extraHeaders, skipRealmAutoComplete);
+    const headers = this.getHeaders(credentials, authType, extraHeaders, skipRealmAutoComplete, targetUrl);
 
     try {
       const electronAPI = (window as unknown as {
@@ -511,16 +590,15 @@ export class WorkBuddyRealApi {
       ...(ev.payload || {}),
     }));
 
-    const desktopHeaders: Record<string, string> = {
+    const webReportHeaders: Record<string, string> = {
       ...(extraHeaders || {}),
-      'X-Client-Platform': 'desktop',
-      'X-Client-Version': '5.9.0',
-      'X-App-Version': '5.9.0',
-      'User-Agent': desktopUA,
+      'X-Client-Platform': 'web',
+      'X-Submitted-From': 'web',
+      Referer: 'https://www.workbuddy.cn/app',
       ...(identity.uid ? { 'X-User-Id': identity.uid } : {}),
     };
 
-    return this.request('/v2/report', 'POST', credentials, authType, reportItems, desktopHeaders);
+    return this.request('/v2/report', 'POST', credentials, authType, reportItems, webReportHeaders);
   }
 
   // 2. Fetch real resource / credit / points summary with automatic POST / GET & cookie fallback
@@ -638,7 +716,7 @@ export class WorkBuddyRealApi {
     return true;
   }
 
-  // 5. Claim reward for a completed task (supports Growth Center web & v2/v1 claim endpoints)
+  // 5. Claim reward for a completed task (official GrowthI18nProvider endpoint FIRST: POST /activity/growth/tasks/:code/claim)
   public async claimTaskReward(
     taskCode: string,
     credentials: string,
@@ -650,17 +728,16 @@ export class WorkBuddyRealApi {
     const growthWebHeaders: Record<string, string> = {
       ...(extraHeaders || {}),
       'X-Client-Platform': 'web',
+      'X-Submitted-From': 'web',
       Origin: 'https://www.workbuddy.cn',
       Referer: 'https://www.workbuddy.cn/profile/growth-center',
     };
 
     const attempts: Array<{ path: string; body: any; headers: Record<string, string> }> = [
-      { path: `/v2/activity/growth/tasks/${encodedCode}/claim`, body: {}, headers: growthWebHeaders },
       { path: `/activity/growth/tasks/${encodedCode}/claim`, body: {}, headers: growthWebHeaders },
-      { path: '/v2/activity/growth/tasks/claim', body: { task_code: taskCode, taskCode }, headers: growthWebHeaders },
+      { path: `/v2/activity/growth/tasks/${encodedCode}/claim`, body: {}, headers: growthWebHeaders },
       { path: '/activity/growth/tasks/claim', body: { task_code: taskCode, taskCode }, headers: growthWebHeaders },
       { path: `/v2/activity/growth/tasks/${encodedCode}/receive`, body: {}, headers: growthWebHeaders },
-      { path: `/activity/growth/tasks/${encodedCode}/claim`, body: {}, headers: extraHeaders || {} },
     ];
 
     let lastRes: { ok: boolean; status: number; data: any } = { ok: false, status: 500, data: {} };
@@ -712,11 +789,19 @@ export class WorkBuddyRealApi {
           endpoint: attempt.path,
           message: alreadyClaimed ? '该任务奖励已领取' : '奖励领取成功',
         };
-      } else {
-        onStepLog?.(
-          'info',
-          `领奖尝试 ${attempt.path} -> HTTP ${res.status}, code=${res.data?.code ?? '-'}, 提示=${msgText || '无'}`
-        );
+      }
+
+      onStepLog?.(
+        'info',
+        `领奖尝试 ${attempt.path} -> HTTP ${res.status}, code=${res.data?.code ?? '-'}, 提示=${msgText || '无'}`
+      );
+
+      // If official endpoint returned an explicit deterministic business rejection (e.g. HTTP 400 "task not completed"), stop trying deprecated fallbacks
+      if (
+        res.status === 400 &&
+        (msgLower.includes('not completed') || msgLower.includes('not finished') || msgLower.includes('未完成'))
+      ) {
+        break;
       }
     }
 
@@ -1015,9 +1100,10 @@ export class WorkBuddyRealApi {
     specificExpertName: string | undefined,
     credentials: string,
     authType: 'cookie' | 'token',
-    desktopHeaders: Record<string, string>,
+    webApiHeaders: Record<string, string>,
     enterpriseId?: string,
-    onStepLog?: (level: 'info' | 'warn' | 'error' | 'success', message: string) => void
+    onStepLog?: (level: 'info' | 'warn' | 'error' | 'success', message: string) => void,
+    taskJumpUrl?: string
   ): Promise<{
     experts: Array<{
       id: string;
@@ -1102,6 +1188,15 @@ export class WorkBuddyRealApi {
       const d = res?.data?.data || res?.data;
       if (!d || typeof d !== 'object') return [];
       if (Array.isArray(d)) return d;
+      if (Array.isArray(d.scenes)) {
+        const sceneExperts: any[] = [];
+        for (const sc of d.scenes) {
+          if (Array.isArray(sc?.experts)) {
+            sceneExperts.push(...sc.experts);
+          }
+        }
+        if (sceneExperts.length > 0) return sceneExperts;
+      }
       if (d.results && typeof d.results === 'object' && !Array.isArray(d.results)) {
         const merged: any[] = [];
         for (const catGroup of Object.values(d.results) as any[]) {
@@ -1115,51 +1210,106 @@ export class WorkBuddyRealApi {
       return Array.isArray(arr) ? arr : [];
     };
 
-    // 1. Official Public Market Search/List APIs (from main-D4DaPwsz.js CloudExpertRepo._fetchPublicMarketExperts)
-    const marketPayloads: Array<{ path: string; body: Record<string, any> }> = [];
-    if (specificExpertName) {
-      const kwBody = {
-        page: 1,
-        page_size: 50,
-        keyword: specificExpertName,
-        sort_by: 'reco_rank',
-        sort_order: 'desc',
-        ...(isTeam ? { expert_type: 'team' } : {}),
-      };
-      marketPayloads.push(
-        { path: '/portal/operation-platform/market/expert/list', body: kwBody },
-        { path: '/console/operation-platform/market/expert/list', body: kwBody }
-      );
+    // 0. If task jump_url carries expert_id / expertId / id, resolve directly via get-by-ids
+    const jumpExpertId = extractIdFromJumpUrl(taskJumpUrl, ['expert_id', 'expertId', 'agent_id', 'id']);
+    if (jumpExpertId) {
+      const directRes = await this.request(
+        '/portal/operation-platform/market/expert/get-by-ids',
+        'POST',
+        credentials,
+        authType,
+        { expert_ids: [jumpExpertId], include_invisible: true },
+        webApiHeaders
+      ).catch(() => null);
+      const directItems = extractMarketItems(directRes);
+      if (directItems.length > 0) {
+        diagnostics.push(`jump_url:${directItems.length}`);
+        directItems.forEach((item) => pushCandidate(item, 'jump_url', isTeam));
+      } else {
+        pushCandidate({ id: jumpExpertId, name: specificExpertName || jumpExpertId }, 'jump_url', isTeam);
+        diagnostics.push(`jump_url:1`);
+      }
     }
-    const listBody = {
-      page: 1,
-      page_size: 100,
-      sort_by: 'reco_rank',
-      sort_order: 'desc',
-      ...(isTeam ? { expert_type: 'team' } : {}),
-    };
-    marketPayloads.push(
-      { path: '/portal/operation-platform/market/expert/list', body: listBody },
-      { path: '/console/operation-platform/market/expert/list', body: listBody }
-    );
+
+    // Build normalized search keywords so partial/long titles like 「无畏契约拼豆专家」「商家宣传页与海报设计师」「腾讯轻量云」 match reliably
+    const searchKeywords: string[] = [];
+    if (specificExpertName) {
+      const addKw = (k: string) => {
+        const clean = k.trim();
+        if (clean && !searchKeywords.includes(clean)) searchKeywords.push(clean);
+      };
+      addKw(specificExpertName);
+      addKw(specificExpertName.replace(/(?:专家|设计师|助手|教练)$/g, ''));
+      if (specificExpertName.includes('无畏契约')) addKw('无畏契约');
+      if (specificExpertName.includes('商家宣传页')) addKw('商家宣传页');
+      if (specificExpertName.includes('海报')) addKw('海报');
+      if (specificExpertName.includes('轻量云')) addKw('轻量云');
+    }
 
     onStepLog?.(
       'info',
       `正在检索官方${isTeam ? '专家团' : '专家'}列表${specificExpertName ? `（目标「${specificExpertName}」）` : ''}...`
     );
 
-    for (const ep of marketPayloads) {
-      const res = await this.request(ep.path, 'POST', credentials, authType, ep.body, desktopHeaders).catch(
-        () => null
-      );
-      const items = extractMarketItems(res);
-      if (items.length > 0) {
-        diagnostics.push(`${ep.path}:${items.length}`);
-        items.forEach((item) => pushCandidate(item, 'market', isTeam));
-        onStepLog?.('info', `检索 ${ep.path} -> HTTP ${res?.status}, 获取 ${items.length} 条`);
-      } else if (res?.status) {
-        diagnostics.push(`${ep.path}=HTTP${res.status}`);
-        onStepLog?.('info', `检索 ${ep.path} -> HTTP ${res.status}, 返回 0 条`);
+    // 1. Official Public Market Search/List APIs (with Web headers so APISIX never rejects Cookie with 401)
+    for (const kw of searchKeywords) {
+      const kwBody = {
+        page: 1,
+        page_size: 50,
+        keyword: kw,
+        sort_by: 'reco_rank',
+        sort_order: 'desc',
+        ...(isTeam ? { expert_type: 'team' } : {}),
+      };
+      let foundForKw = false;
+      for (const path of ['/portal/operation-platform/market/expert/list', '/console/operation-platform/market/expert/list']) {
+        const res = await this.request(path, 'POST', credentials, authType, kwBody, webApiHeaders).catch(() => null);
+        const items = extractMarketItems(res);
+        if (items.length > 0) {
+          diagnostics.push(`${path}(${kw}):${items.length}`);
+          items.forEach((item) => pushCandidate(item, 'market', isTeam));
+          onStepLog?.('info', `检索 ${path} (keyword=${kw}) -> HTTP ${res?.status}, 获取 ${items.length} 条`);
+          foundForKw = true;
+          break;
+        } else if (res?.status) {
+          diagnostics.push(`${path}=HTTP${res.status}`);
+          onStepLog?.('info', `检索 ${path} (keyword=${kw}) -> HTTP ${res.status}, 返回 0 条`);
+        }
+      }
+      if (foundForKw && collected.length > 0) {
+        // Check if we already found an exact/partial match for specificExpertName
+        const needle = (specificExpertName || '').toLowerCase();
+        const hit = collected.some(
+          (e) =>
+            e.displayName.toLowerCase().includes(needle) ||
+            e.name.toLowerCase().includes(needle) ||
+            needle.includes(e.displayName.toLowerCase()) ||
+            needle.includes(e.name.toLowerCase())
+        );
+        if (hit) break;
+      }
+    }
+
+    // Always also fetch general recommended page if target wasn't hit yet or running generic 5 experts / 3 teams
+    if (!specificExpertName || collected.length === 0) {
+      const listBody = {
+        page: 1,
+        page_size: 100,
+        sort_by: 'reco_rank',
+        sort_order: 'desc',
+        ...(isTeam ? { expert_type: 'team' } : {}),
+      };
+      for (const path of ['/portal/operation-platform/market/expert/list', '/console/operation-platform/market/expert/list']) {
+        const res = await this.request(path, 'POST', credentials, authType, listBody, webApiHeaders).catch(() => null);
+        const items = extractMarketItems(res);
+        if (items.length > 0) {
+          diagnostics.push(`${path}:${items.length}`);
+          items.forEach((item) => pushCandidate(item, 'market', isTeam));
+          onStepLog?.('info', `检索 ${path} (推荐榜) -> HTTP ${res?.status}, 获取 ${items.length} 条`);
+          break;
+        } else if (res?.status) {
+          diagnostics.push(`${path}=HTTP${res.status}`);
+        }
       }
     }
 
@@ -1178,7 +1328,7 @@ export class WorkBuddyRealApi {
           credentials,
           authType,
           undefined,
-          desktopHeaders
+          webApiHeaders
         ).catch(() => null);
         const items = extractMarketItems(res);
         if (items.length > 0) {
@@ -1190,28 +1340,50 @@ export class WorkBuddyRealApi {
       }
     }
 
-    // 3. Official Static Marketplace Manifests (429+ built-in experts & 53 teams)
+    // 3. Official Static Marketplace Manifests (built-in, external, internal & featured scenes)
     const cdnUrls = [
       'https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/expert-marketplace/expert_center.json',
       'https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/expert-marketplace/externalExpert.json',
+      'https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/expert-marketplace/internalExpert.json',
+      'https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/expert-marketplace/featuredScenes.json',
     ];
     for (const cdnUrl of cdnUrls) {
       const cdnRes = await this.request(cdnUrl, 'GET', credentials, authType, undefined, {}).catch(() => null);
-      const cdnExperts = cdnRes?.data?.experts;
-      if (Array.isArray(cdnExperts) && cdnExperts.length > 0) {
+      const cdnExperts: any[] = [];
+      if (Array.isArray(cdnRes?.data?.experts)) cdnExperts.push(...cdnRes.data.experts);
+      if (Array.isArray(cdnRes?.data?.scenes)) {
+        for (const sc of cdnRes.data.scenes) {
+          if (Array.isArray(sc?.experts)) cdnExperts.push(...sc.experts);
+        }
+      }
+      if (cdnExperts.length > 0) {
         diagnostics.push(`cdn:${cdnExperts.length}`);
         cdnExperts.forEach((item) => pushCandidate(item, 'builtin'));
       }
     }
 
-    // 4. Official Category Batch & Ranking Endpoints
+    // 4. Official Featured, Category Batch & Ranking Endpoints
+    const featuredRes = await this.request(
+      '/api/v2/open-platform/featured',
+      'POST',
+      credentials,
+      authType,
+      {},
+      webApiHeaders
+    ).catch(() => null);
+    const featuredItems = extractMarketItems(featuredRes);
+    if (featuredItems.length > 0) {
+      diagnostics.push(`featured:${featuredItems.length}`);
+      featuredItems.forEach((item) => pushCandidate(item, 'featured'));
+    }
+
     const rankRes = await this.request(
       '/portal/expert/ranking?limit=100',
       'GET',
       credentials,
       authType,
       undefined,
-      desktopHeaders
+      webApiHeaders
     ).catch(() => null);
     const rankItems = extractMarketItems(rankRes);
     if (rankItems.length > 0) {
@@ -1225,7 +1397,7 @@ export class WorkBuddyRealApi {
       credentials,
       authType,
       { template_id: 1, items: [] },
-      desktopHeaders
+      webApiHeaders
     ).catch(() => null);
     const catItems = extractMarketItems(catRes);
     if (catItems.length > 0) {
@@ -1260,6 +1432,8 @@ export class WorkBuddyRealApi {
         task.currentProgress >= task.targetProgress &&
         task.status !== '已领奖');
 
+    const taskJumpUrl = 'jump_url' in task ? task.jump_url : 'jumpUrl' in task ? task.jumpUrl : undefined;
+
     onStepLog?.('info', `开始处理任务 (task_code=${taskCode}, 目标进度=${targetCount})，正在解析账号身份...`);
     const identity = await this.resolveAccountIdentity(credentials, authType, extraHeaders);
     onStepLog?.(
@@ -1269,15 +1443,10 @@ export class WorkBuddyRealApi {
       }`
     );
 
-    const desktopUA =
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) WorkBuddy/5.9.0 Chrome/131.0.0.0 Electron/33.2.0 Safari/537.36';
-
     const desktopHeaders: Record<string, string> = {
       ...(extraHeaders || {}),
-      'X-Client-Platform': 'desktop',
-      'X-Client-Version': '5.9.0',
-      'X-App-Version': '5.9.0',
-      'User-Agent': desktopUA,
+      'X-Client-Platform': 'web',
+      'X-Submitted-From': 'web',
       Referer: 'https://www.workbuddy.cn/app',
       ...(identity.uid ? { 'X-User-Id': identity.uid } : {}),
     };
@@ -1627,44 +1796,92 @@ export class WorkBuddyRealApi {
     }
 
     // =========================================================================
-    // Category D2: 尝鲜热门技能 (安装并使用 1 个技能)
+    // Category D2: 尝鲜热门技能 (安装并使用 1 个技能 - 官方 /v2/user-asset/skill/install)
     // =========================================================================
     else if (title.includes('技能') || title.includes('尝鲜')) {
       const skillsRes = await this.request(
-        '/api/v2/open-platform/skills',
+        '/api/v2/open-platform/skills?source=builtin&page=1&page_size=20',
         'GET',
         credentials,
         authType,
         undefined,
         desktopHeaders
-      );
+      ).catch(() => null);
       const searchRes = await this.request(
         '/api/v2/open-platform/skills/search',
         'POST',
         credentials,
         authType,
-        { keyword: '', page: 1, page_size: 10 },
+        { keyword: '', page: 1, page_size: 20 },
         desktopHeaders
-      );
-      const skillList =
-        skillsRes.data?.data?.list ||
-        skillsRes.data?.data?.items ||
-        skillsRes.data?.data ||
-        searchRes.data?.data?.list ||
-        searchRes.data?.data?.items ||
+      ).catch(() => null);
+      const skillhubRes = await this.request(
+        'https://api.skillhub.cn/api/skills?page=1&pageSize=20',
+        'GET',
+        credentials,
+        authType,
+        undefined,
+        {}
+      ).catch(() => null);
+
+      const workbuddySkillList =
+        skillsRes?.data?.data?.list ||
+        skillsRes?.data?.data?.items ||
+        skillsRes?.data?.data ||
+        searchRes?.data?.data?.list ||
+        searchRes?.data?.data?.items ||
         [];
-      const firstSkill = Array.isArray(skillList) && skillList[0] ? skillList[0] : {};
-      const skillId = String(firstSkill.asset_id || firstSkill.skill_id || firstSkill.id || 'builtin_web_search');
+      const skillhubList =
+        skillhubRes?.data?.data?.skills ||
+        skillhubRes?.data?.data?.list ||
+        skillhubRes?.data?.skills ||
+        skillhubRes?.data?.data ||
+        [];
+
+      const useWorkBuddySkill = Array.isArray(workbuddySkillList) && workbuddySkillList.length > 0;
+      const firstSkill = useWorkBuddySkill
+        ? workbuddySkillList[0]
+        : Array.isArray(skillhubList) && skillhubList[0]
+        ? skillhubList[0]
+        : {};
+
+      const skillId = String(
+        firstSkill.asset_id || firstSkill.skill_id || firstSkill.slug || firstSkill.id || 'find-skills'
+      );
       const skillName = String(firstSkill.name || firstSkill.title || '热门办公技能');
+      const skillVersion = String(firstSkill.version || firstSkill.latest_version || '1.0.0');
+      const skillSource = String(
+        firstSkill.source || (useWorkBuddySkill ? 'market' : 'skillhub')
+      );
+
+      onStepLog?.(
+        'info',
+        `步骤2: 已锁定热门技能「${skillName}」(id=${skillId}, version=${skillVersion}, source=${skillSource})，调用官方 POST /v2/user-asset/skill/install 安装...`
+      );
 
       const installRes = await this.request(
-        `/api/v2/open-platform/skills/${encodeURIComponent(skillId)}/install`,
+        '/v2/user-asset/skill/install',
         'POST',
         credentials,
         authType,
-        { asset_id: skillId, skill_id: skillId },
+        {
+          items: [
+            {
+              source: skillSource === 'skillhub' ? 'skillhub' : 'market',
+              asset_id: skillId,
+              version: skillVersion,
+            },
+          ],
+        },
         desktopHeaders
       ).catch(() => null);
+
+      onStepLog?.(
+        installRes?.ok ? 'success' : 'warn',
+        `官方技能安装接口 /v2/user-asset/skill/install -> HTTP ${installRes?.status || 0}, code=${
+          installRes?.data?.code ?? '-'
+        }`
+      );
       if (installRes?.ok) anyTriggerOk = true;
 
       await this.request(
@@ -1674,14 +1891,14 @@ export class WorkBuddyRealApi {
         authType,
         {
           asset_id: skillId,
+          asset_name: skillName,
           asset_type: 'skill',
           action: 'install',
         },
         desktopHeaders
       ).catch(() => null);
 
-      const skillPrompt = `请使用技能「${skillName}」帮我整理一份今日重点待办摘要。`;
-      onStepLog?.('info', `步骤2: 选中技能 ${skillName} (id=${skillId})，安装返回 HTTP ${installRes?.status || 0}，准备创建云端会话并使用该技能...`);
+      const skillPrompt = `请使用技能「${skillName}」(${skillId}) 帮我整理一份今日重点待办摘要。`;
       const turn = await this.executeCloudConversationTurn(
         {
           prompt: skillPrompt,
@@ -1705,6 +1922,7 @@ export class WorkBuddyRealApi {
         authType,
         {
           asset_id: skillId,
+          asset_name: skillName,
           asset_type: 'skill',
           action: 'use',
         },
@@ -1715,28 +1933,55 @@ export class WorkBuddyRealApi {
       const repRes = await this.reportTelemetryEvents(
         [
           {
-            eventCode: 'skill_install_success',
-            payload: { skillId, skillName, from: 'market' },
+            eventCode: 'skill_detail_show',
+            payload: { skillName, name: skillName, skillId, skillVersion, source: skillSource },
           },
           {
-            eventCode: 'skill_used',
-            payload: { skillId, skillName, conversationId: turn.convId, requestId: reqId },
+            eventCode: 'skill_installed',
+            payload: { name: skillName, skillName, skillId, skillVersion, source: skillSource },
+          },
+          {
+            eventCode: 'skill_action',
+            payload: {
+              name: skillName,
+              skillId,
+              skillVersion,
+              action: 'install',
+              channelType: skillSource === 'skillhub' ? 'skillhub' : 'builtin',
+            },
+          },
+          {
+            eventCode: 'skill_request_send',
+            payload: {
+              name: skillName,
+              skillId,
+              conversationId: turn.convId,
+              requestId: reqId,
+            },
           },
           {
             eventCode: 'agent_task_created',
             payload: {
-              mode: 'LOCAL',
-              isCustomModel: true,
+              mode: 'CLOUD',
+              isCustomModel: false,
+              conversationId: turn.convId,
               conversation_id: turn.convId,
+              requestId: reqId,
               request_id: reqId,
               skill_id: skillId,
               skill_name: skillName,
             },
           },
           {
+            eventCode: 'chat_request_send',
+            payload: { conversationId: turn.convId, requestId: reqId, skillId },
+          },
+          {
             eventCode: 'chat_response_complete',
             payload: {
+              conversationId: turn.convId,
               conversation_id: turn.convId,
+              requestId: reqId,
               request_id: reqId,
               skill_id: skillId,
             },
@@ -1745,6 +1990,10 @@ export class WorkBuddyRealApi {
         credentials,
         authType,
         desktopHeaders
+      );
+      onStepLog?.(
+        repRes.ok ? 'info' : 'warn',
+        `上报技能使用埋点 /v2/report (skill_installed, skill_action, skill_request_send) -> HTTP ${repRes.status}`
       );
       if (repRes.ok) anyTriggerOk = true;
     }
@@ -1959,23 +2208,98 @@ export class WorkBuddyRealApi {
     }
 
     // =========================================================================
-    // Category G1: 体验「资料库」
+    // Category G1: 体验「资料库」 (官方 NetDrive / TDrive / my-files + 官方埋点)
     // =========================================================================
     else if (title.includes('资料库')) {
-      const kbEndpoints = [
-        '/api/v2/knowledge/docs',
-        '/api/v1/knowledge/list',
-        '/v2/docs/workbuddy',
-      ];
-      for (const ep of kbEndpoints) {
-        const kbRes = await this.request(ep, 'GET', credentials, authType, undefined, desktopHeaders).catch(() => null);
-        if (kbRes?.ok) anyTriggerOk = true;
+      onStepLog?.('info', '步骤2: 正在访问官方资料库接口 (/console/as/netdrive/access-token, /v2/as/netdisk/shares)...');
+      const netdriveTokenRes = await this.request(
+        '/console/as/netdrive/access-token',
+        'POST',
+        credentials,
+        authType,
+        {},
+        desktopHeaders
+      ).catch(() => null);
+      if (netdriveTokenRes?.ok) anyTriggerOk = true;
+
+      await this.request(
+        '/console/as/netdrive/nicknames',
+        'POST',
+        credentials,
+        authType,
+        {},
+        desktopHeaders
+      ).catch(() => null);
+
+      const sharesRes = await this.request(
+        '/v2/as/netdisk/shares?page=1&pageSize=10',
+        'GET',
+        credentials,
+        authType,
+        undefined,
+        desktopHeaders
+      ).catch(() => null);
+      if (sharesRes?.ok) anyTriggerOk = true;
+
+      const ndData = netdriveTokenRes?.data?.data || netdriveTokenRes?.data || {};
+      const ndBaseUrl = typeof ndData.baseUrl === 'string' ? ndData.baseUrl.replace(/\/$/, '') : '';
+      const ndToken = typeof ndData.accessToken === 'string' ? ndData.accessToken : '';
+      if (ndBaseUrl && ndToken) {
+        const ndHeaders = { Authorization: `Bearer ${ndToken}` };
+        const appListRes = await this.request(
+          `${ndBaseUrl}/api/v6/open/tdrive/drive/app-list`,
+          'GET',
+          credentials,
+          authType,
+          undefined,
+          ndHeaders
+        ).catch(() => null);
+        if (appListRes?.ok) anyTriggerOk = true;
+        await this.request(
+          `${ndBaseUrl}/api/v6/open/tdrive/dir/list`,
+          'POST',
+          credentials,
+          authType,
+          { page: 1, page_size: 20 },
+          ndHeaders
+        ).catch(() => null);
+        await this.request(
+          `${ndBaseUrl}/api/v6/open/agent/manage/list_file`,
+          'POST',
+          credentials,
+          authType,
+          { path: '/', page: 1, page_size: 20 },
+          ndHeaders
+        ).catch(() => null);
+      } else {
+        await this.request(
+          '/api/v6/open/tdrive/drive/app-list',
+          'GET',
+          credentials,
+          authType,
+          undefined,
+          desktopHeaders
+        ).catch(() => null);
       }
 
-      onStepLog?.('info', '步骤2: 正在创建云端会话并发起资料库咨询对话...');
-      const kbPrompt = '请介绍一下 WorkBuddy 资料库的核心功能和使用方法。';
+      await this.request(
+        '/api/v2/open-platform/asset-usage/report',
+        'POST',
+        credentials,
+        authType,
+        {
+          asset_id: 'library',
+          asset_name: 'WorkBuddy 资料库介绍',
+          asset_type: 'library',
+          action: 'enter',
+        },
+        desktopHeaders
+      ).catch(() => null);
+
+      onStepLog?.('info', '步骤3: 正在创建云端会话并发起资料库功能咨询对话...');
+      const kbPrompt = '请介绍一下 WorkBuddy 资料库（我的文件与云盘同步）的核心功能和使用方法。';
       const turn = await this.executeCloudConversationTurn(
-        { prompt: kbPrompt, tags: ['knowledge_base'] },
+        { prompt: kbPrompt, tags: ['knowledge_base', 'my_files'] },
         kbPrompt,
         credentials,
         authType,
@@ -1984,16 +2308,32 @@ export class WorkBuddyRealApi {
       );
       pendingCleanups.push(turn.cleanup);
       if (turn.messageSent) anyTriggerOk = true;
+      const reqId = `req_${Date.now()}`;
 
       const repRes = await this.reportTelemetryEvents(
         [
-          { eventCode: 'knowledge_base_enter', payload: { source: 'growth_center' } },
-          { eventCode: 'docs_view', payload: { docTitle: 'WorkBuddy 资料库介绍', source: 'knowledge_base' } },
-          { eventCode: 'knowledge_doc_read_complete', payload: { docTitle: 'WorkBuddy 资料库介绍', progress: 100 } },
+          { eventCode: 'web_page_show', payload: { page: 'library/my-files', source: 'growth_center' } },
+          { eventCode: 'asset_list_show', payload: { source: 'library/my-files', assetType: 'library' } },
+          { eventCode: 'asset_cloud_list_show', payload: { source: 'library/my-files' } },
+          { eventCode: 'asset_cloud_sync', payload: { source: 'library/my-files', docTitle: 'WorkBuddy 资料库介绍' } },
+          { eventCode: 'docs_view', payload: { docTitle: 'WorkBuddy 资料库介绍', source: 'library' } },
+          {
+            eventCode: 'agent_task_created',
+            payload: { mode: 'CLOUD', conversationId: turn.convId, requestId: reqId, source: 'library' },
+          },
+          { eventCode: 'chat_request_send', payload: { conversationId: turn.convId, requestId: reqId, source: 'library' } },
+          {
+            eventCode: 'chat_response_complete',
+            payload: { conversationId: turn.convId, requestId: reqId, source: 'library' },
+          },
         ],
         credentials,
         authType,
         desktopHeaders
+      );
+      onStepLog?.(
+        repRes.ok ? 'info' : 'warn',
+        `上报资料库官方埋点 /v2/report (web_page_show, asset_cloud_list_show, asset_cloud_sync) -> HTTP ${repRes.status}`
       );
       if (repRes.ok) anyTriggerOk = true;
     }
@@ -2094,7 +2434,8 @@ export class WorkBuddyRealApi {
         authType,
         desktopHeaders,
         identity.enterpriseId,
-        onStepLog
+        onStepLog,
+        taskJumpUrl
       );
       const allExperts = resolved.experts;
       const teamPool = allExperts.filter((e) => e.isTeam);
@@ -2104,18 +2445,27 @@ export class WorkBuddyRealApi {
       const usedExpertIds = new Set<string>();
       const iterLogs: string[] = [];
 
+      const normalizeExpertStr = (s: string) =>
+        String(s || '')
+          .toLowerCase()
+          .replace(/[「」\[\]\s·_\-—:：()（）]/g, '');
+
       for (let i = 0; i < iterations; i++) {
         let chosen: (typeof allExperts)[number] | undefined;
 
         if (specificExpertName) {
           const needle = specificExpertName.toLowerCase();
+          const normNeedle = normalizeExpertStr(specificExpertName);
+          const normShort = normalizeExpertStr(specificExpertName.replace(/(?:专家|设计师|助手|教练)$/g, ''));
           chosen =
             allExperts.find(
               (e) =>
                 e.displayName.toLowerCase() === needle ||
                 e.name.toLowerCase() === needle ||
                 e.expertTitle.toLowerCase() === needle ||
-                e.id.toLowerCase() === needle
+                e.id.toLowerCase() === needle ||
+                normalizeExpertStr(e.displayName) === normNeedle ||
+                normalizeExpertStr(e.name) === normNeedle
             ) ||
             allExperts.find(
               (e) =>
@@ -2124,7 +2474,10 @@ export class WorkBuddyRealApi {
                 e.expertTitle.toLowerCase().includes(needle) ||
                 needle.includes(e.displayName.toLowerCase()) ||
                 needle.includes(e.name.toLowerCase()) ||
-                needle.includes(e.expertTitle.toLowerCase())
+                needle.includes(e.expertTitle.toLowerCase()) ||
+                normalizeExpertStr(e.displayName).includes(normShort) ||
+                normalizeExpertStr(e.name).includes(normShort) ||
+                normShort.includes(normalizeExpertStr(e.displayName))
             );
         } else {
           chosen =
@@ -2160,6 +2513,21 @@ export class WorkBuddyRealApi {
             desktopHeaders
           ).catch(() => null);
           onStepLog?.('info', `拉取专家详情 /market/expert/get-by-ids -> HTTP ${detailRes?.status || 0}`);
+        }
+
+        if (specificExpertName && (specificExpertName.includes('轻量云') || specificExpertName.includes('连接器'))) {
+          const connRes = await this.request(
+            '/api/v2/open-platform/connectors?page=1&pageSize=20',
+            'GET',
+            credentials,
+            authType,
+            undefined,
+            desktopHeaders
+          ).catch(() => null);
+          onStepLog?.(
+            'info',
+            `检索连接器状态 /open-platform/connectors -> HTTP ${connRes?.status || 0}`
+          );
         }
 
         const promptText =
@@ -2595,6 +2963,7 @@ export function mapRawTaskToWorkBuddyTask(rt: any): WorkBuddyTask {
       : '待执行 / 可点[一键完成]',
     reason: officialDesc,
     autoExecutable: !title.includes('公众号') || status === '待领奖',
+    jumpUrl: rt.jump_url || rt.jumpUrl || undefined,
   };
 }
 

@@ -13,7 +13,7 @@ import {
   Zap,
 } from 'lucide-react';
 
-export const CURRENT_APP_VERSION = '1.3.1';
+export const CURRENT_APP_VERSION = '1.3.2';
 export const GITHUB_REPO = 'dengwka/workBuddyTools';
 
 export interface GitHubReleaseAsset {
@@ -386,7 +386,7 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
 
   const defaultReleaseNotes =
     release?.body?.trim() ||
-    `### v${localVersion} 更新说明\n- 采用 kuaixuntong 同款无自签名污染 NSIS 打包与流式直装方案，避免浏览器下载标记导致 SmartScreen 蓝框拦截\n- 新增 13 项成长中心任务自动触发与快捷完成助手\n- 每完成一项任务实时调用官方接口刷新最新积分\n- 底部日志控制台默认收起并支持鼠标上下拖拽调节高度，消除底部按钮换行`;
+    `### v${localVersion} 更新说明\n- 修复 Cookie 模式 401 鉴权错配，打通专家召唤、尝鲜热门技能与资料库任务全链路\n- 严格账号权限控制与账号隔离：仅执行已勾选账号，任务、日志与实时积分完全隔离\n- 新增「[操作账号: 昵称 (短ID)]」清晰日志前缀与日志控制台一键复制功能\n- 领奖后自动刷新顶部实时积分并修复浮点精度展示`;
 
   const handleSmartDownload = async () => {
     setStatusMessage(null);

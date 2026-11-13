@@ -13,6 +13,7 @@ export interface WorkBuddyTask {
   recentResult: string;
   reason: string;
   autoExecutable: boolean;
+  jumpUrl?: string;
 }
 
 export interface CatTravelInfo {

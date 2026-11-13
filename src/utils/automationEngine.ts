@@ -1,5 +1,11 @@
 import { WorkBuddyAccount, ExecutionLog } from '../types/workbuddy';
-import { workbuddyRealApi, WorkBuddyRawTask, mapRawTaskToWorkBuddyTask } from './workbuddyRealApi';
+import {
+  workbuddyRealApi,
+  WorkBuddyRawTask,
+  mapRawTaskToWorkBuddyTask,
+  roundPoints,
+  formatAccountLabel,
+} from './workbuddyRealApi';
 
 export class AutomationEngine {
   private isCancelled = false;
@@ -29,7 +35,7 @@ export class AutomationEngine {
         resData.available_credits;
 
       if (totalPoints !== undefined && totalPoints !== null) {
-        account.points = Number(totalPoints);
+        account.points = roundPoints(totalPoints);
         account.lastUpdated = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
         return account.points;
       }
@@ -54,14 +60,16 @@ export class AutomationEngine {
     let skips = 0;
 
     for (let accIdx = 0; accIdx < updated.length; accIdx++) {
+      const acc = updated[accIdx];
+      const accPrefix = `[操作账号: ${formatAccountLabel(acc.id, acc.nickname)}]`;
       if (this.isCancelled) {
         onProgress(
           {
             id: Math.random().toString(36).substring(2, 9),
             timestamp: new Date().toLocaleTimeString(),
-            accountId: updated[accIdx].id,
+            accountId: acc.id,
             level: 'warn',
-            message: `[${updated[accIdx].id}] 用户中断了任务批处理执行`,
+            message: `${accPrefix} 用户中断了任务批处理执行`,
           },
           updated,
           { successes, fails, skips }
@@ -69,8 +77,9 @@ export class AutomationEngine {
         break;
       }
 
-      const account = updated[accIdx];
+      const account = acc;
       account.status = '运行中';
+      const getAccPrefix = () => `[操作账号: ${formatAccountLabel(account.id, account.nickname)}]`;
 
       onProgress(
         {
@@ -78,7 +87,7 @@ export class AutomationEngine {
           timestamp: new Date().toLocaleTimeString(),
           accountId: account.id,
           level: 'info',
-          message: `[${account.id}] 正在向 https://www.workbuddy.cn 发起真实接口鉴权...`,
+          message: `${getAccPrefix()} 正在向 https://www.workbuddy.cn 发起真实接口鉴权...`,
         },
         updated,
         { successes, fails, skips }
@@ -100,7 +109,7 @@ export class AutomationEngine {
               timestamp: new Date().toLocaleTimeString(),
               accountId: account.id,
               level: 'success',
-              message: `[${account.id}] 官方账号认证成功，当前用户：${account.nickname}`,
+              message: `${getAccPrefix()} 官方账号认证成功，当前用户：${account.nickname}`,
             },
             updated,
             { successes, fails, skips }
@@ -117,7 +126,7 @@ export class AutomationEngine {
             timestamp: new Date().toLocaleTimeString(),
             accountId: account.id,
             level: 'info',
-            message: `[${account.id}] 成功同步 WorkBuddy 官方实时积分：${account.points} 积分`,
+            message: `${getAccPrefix()} 成功同步 WorkBuddy 官方实时积分：${account.points} 积分`,
           },
           updated,
           { successes, fails, skips }
@@ -133,7 +142,7 @@ export class AutomationEngine {
               timestamp: new Date().toLocaleTimeString(),
               accountId: account.id,
               level: 'error',
-              message: `[${account.id}] 官方接口返回 401 Unauthorized：Cookie 或 Token 已失效，请双击账号更新凭据`,
+              message: `${getAccPrefix()} 官方接口返回 401 Unauthorized：Cookie 或 Token 已失效，请双击账号更新凭据`,
             },
             updated,
             { successes, fails, skips }
@@ -149,7 +158,7 @@ export class AutomationEngine {
             timestamp: new Date().toLocaleTimeString(),
             accountId: account.id,
             level: 'info',
-            message: `[${account.id}] 正在查询猫猫旅行官方状态 (/activity/growth/buddy/travel/status)...`,
+            message: `${getAccPrefix()} 正在查询猫猫旅行官方状态 (/activity/growth/buddy/travel/status)...`,
           },
           updated,
           { successes, fails, skips }
@@ -164,6 +173,7 @@ export class AutomationEngine {
               successes++;
               account.catTravel.status = '今日已完成';
               account.catTravel.lastResult = '猫猫旅行完成并已领取奖励！';
+              await new Promise((r) => setTimeout(r, 400));
               await this.syncLivePointsFromServer(account, creds, authType, extraHeaders);
               onProgress(
                 {
@@ -171,7 +181,7 @@ export class AutomationEngine {
                   timestamp: new Date().toLocaleTimeString(),
                   accountId: account.id,
                   level: 'success',
-                  message: `[${account.id}] 成功领取猫猫旅行奖励，已调官方服务实时刷新积分：${account.points}`,
+                  message: `${getAccPrefix()} 成功领取猫猫旅行奖励，已调官方服务实时刷新积分：${account.points}`,
                 },
                 updated,
                 { successes, fails, skips }
@@ -190,7 +200,7 @@ export class AutomationEngine {
                   timestamp: new Date().toLocaleTimeString(),
                   accountId: account.id,
                   level: 'success',
-                  message: `[${account.id}] 猫猫已自动出发旅行，当前官方实时积分：${account.points}`,
+                  message: `${getAccPrefix()} 猫猫已自动出发旅行，当前官方实时积分：${account.points}`,
                 },
                 updated,
                 { successes, fails, skips }
@@ -207,7 +217,7 @@ export class AutomationEngine {
                 timestamp: new Date().toLocaleTimeString(),
                 accountId: account.id,
                 level: 'info',
-                message: `[${account.id}] 猫猫今日已完成旅行，跳过`,
+                message: `${getAccPrefix()} 猫猫今日已完成旅行，跳过`,
               },
               updated,
               { successes, fails, skips }
@@ -223,7 +233,7 @@ export class AutomationEngine {
           timestamp: new Date().toLocaleTimeString(),
           accountId: account.id,
           level: 'info',
-          message: `[${account.id}] 正在拉取官方成长中心任务列表 (/v2/activity/growth/tasks)...`,
+          message: `${getAccPrefix()} 正在拉取官方成长中心任务列表 (/v2/activity/growth/tasks)...`,
         },
         updated,
         { successes, fails, skips }
@@ -243,7 +253,7 @@ export class AutomationEngine {
               timestamp: new Date().toLocaleTimeString(),
               accountId: account.id,
               level: 'success',
-              message: `[${account.id}] 成功同步到 ${rawTasksList.length} 项官方真实任务！`,
+              message: `${getAccPrefix()} 成功同步到 ${rawTasksList.length} 项官方真实任务！`,
             },
             updated,
             { successes, fails, skips }
@@ -262,7 +272,7 @@ export class AutomationEngine {
                 timestamp: new Date().toLocaleTimeString(),
                 accountId: account.id,
                 level: 'info',
-                message: `[${account.id}] 已自动接取 ${unacceptedCodes.length} 项未开始任务`,
+                message: `${getAccPrefix()} 已自动接取 ${unacceptedCodes.length} 项未开始任务`,
               },
               updated,
               { successes, fails, skips }
@@ -291,8 +301,8 @@ export class AutomationEngine {
                 accountId: account.id,
                 level: 'info',
                 message: isPreCompleted
-                  ? `[${account.id}] 检测到任务【${pTask.title}】已达标，正在直接自动领取奖励...`
-                  : `[${account.id}] 正在自动执行任务【${pTask.title}】并尝试领奖...`,
+                  ? `${getAccPrefix()} 检测到任务【${pTask.title}】已达标，正在直接自动领取奖励...`
+                  : `${getAccPrefix()} 正在自动执行任务【${pTask.title}】并尝试领奖...`,
               },
               updated,
               { successes, fails, skips }
@@ -310,7 +320,7 @@ export class AutomationEngine {
                     timestamp: new Date().toLocaleTimeString(),
                     accountId: account.id,
                     level,
-                    message: `[${account.id}] [${pTask.title}] ${msg}`,
+                    message: `${getAccPrefix()} [${pTask.title}] ${msg}`,
                   },
                   updated,
                   { successes, fails, skips }
@@ -318,8 +328,11 @@ export class AutomationEngine {
               }
             );
 
-            // Real-time API call to update points after EVERY task
+            // Real-time API call to update points after EVERY task (brief wait if claimed so server credit ledger settles)
             const pointsBefore = account.points;
+            if (execResult.claimed) {
+              await new Promise((r) => setTimeout(r, 450));
+            }
             await this.syncLivePointsFromServer(account, creds, authType, extraHeaders);
             const pointsGained = account.points > pointsBefore;
 
@@ -336,7 +349,7 @@ export class AutomationEngine {
                     timestamp: new Date().toLocaleTimeString(),
                     accountId: account.id,
                     level: 'success',
-                    message: `[${account.id}] 任务【${pTask.title}】完成领奖！已调接口实时刷新积分：${account.points}`,
+                    message: `${getAccPrefix()} 任务【${pTask.title}】完成领奖！已调接口实时刷新积分：${account.points}`,
                   },
                   updated,
                   { successes, fails, skips }
@@ -349,7 +362,7 @@ export class AutomationEngine {
                     timestamp: new Date().toLocaleTimeString(),
                     accountId: account.id,
                     level: 'warn',
-                    message: `[${account.id}] 任务【${pTask.title}】状态: ${execResult.detail}`,
+                    message: `${getAccPrefix()} 任务【${pTask.title}】状态: ${execResult.detail}`,
                   },
                   updated,
                   { successes, fails, skips }
@@ -384,7 +397,7 @@ export class AutomationEngine {
             timestamp: new Date().toLocaleTimeString(),
             accountId: account.id,
             level: 'info',
-            message: `[${account.id}] 官方签到/活跃状态更新成功 (连续活跃: ${sData.streak?.days || 1} 天 · 实时积分: ${account.points})`,
+            message: `${getAccPrefix()} 官方签到/活跃状态更新成功 (连续活跃: ${sData.streak?.days || 1} 天 · 实时积分: ${account.points})`,
           },
           updated,
           { successes, fails, skips }
@@ -409,6 +422,7 @@ export class AutomationEngine {
       const creds = account.credentials || '';
       const authType = account.authType || 'cookie';
       const extraHeaders = account.extraHeaders;
+      const accPrefix = `[操作账号: ${formatAccountLabel(account.id, account.nickname)}]`;
 
       onProgress(
         {
@@ -416,7 +430,7 @@ export class AutomationEngine {
           timestamp: new Date().toLocaleTimeString(),
           accountId: account.id,
           level: 'info',
-          message: `[${account.id}] 正在向官方服务端发送猫猫旅行请求...`,
+          message: `${accPrefix} 正在向官方服务端发送猫猫旅行请求...`,
         },
         updated
       );
@@ -425,6 +439,7 @@ export class AutomationEngine {
       if (statusRes.ok) {
         await workbuddyRealApi.claimCatTravelReward(creds, authType, extraHeaders);
         await workbuddyRealApi.departCatTravel(1, creds, authType, extraHeaders);
+        await new Promise((r) => setTimeout(r, 400));
         await this.syncLivePointsFromServer(account, creds, authType, extraHeaders);
 
         account.catTravel.status = '今日已完成';
@@ -436,7 +451,7 @@ export class AutomationEngine {
             timestamp: new Date().toLocaleTimeString(),
             accountId: account.id,
             level: 'success',
-            message: `[${account.id}] 猫猫旅行请求已完成，实时同步积分：${account.points}`,
+            message: `${accPrefix} 猫猫旅行请求已完成，实时同步积分：${account.points}`,
           },
           updated
         );
@@ -447,7 +462,7 @@ export class AutomationEngine {
             timestamp: new Date().toLocaleTimeString(),
             accountId: account.id,
             level: 'warn',
-            message: `[${account.id}] 猫猫旅行接口调用完成 (HTTP ${statusRes.status})`,
+            message: `${accPrefix} 猫猫旅行接口调用完成 (HTTP ${statusRes.status})`,
           },
           updated
         );

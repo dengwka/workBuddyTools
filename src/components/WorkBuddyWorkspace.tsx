@@ -33,6 +33,8 @@ import {
   WorkBuddyRawTask,
   mapRawTaskToWorkBuddyTask,
   sanitizeTaskProgress,
+  roundPoints,
+  formatAccountLabel,
 } from '../utils/workbuddyRealApi';
 import { AddAccountModal } from './AddAccountModal';
 import { AccountEditModal } from './AccountEditModal';
@@ -58,6 +60,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
         if (Array.isArray(parsed)) {
           return parsed.map((acc) => ({
             ...acc,
+            points: roundPoints(acc.points),
             tasks: Array.isArray(acc.tasks)
               ? acc.tasks.map((t) => sanitizeTaskProgress(t))
               : [],
@@ -67,7 +70,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     } catch {
       // fallback
     }
-    return INITIAL_ACCOUNTS;
+    return INITIAL_ACCOUNTS.map((acc) => ({ ...acc, points: roundPoints(acc.points) }));
   });
 
   // Selected account in left sidebar
@@ -85,8 +88,8 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   // Search keyword for left sidebar
   const [searchKeyword, setSearchKeyword] = useState('');
 
-  // Execution scope radio: 'all' | 'selected'
-  const [executionScope, setExecutionScope] = useState<'all' | 'selected'>('all');
+  // Execution scope radio: default strictly to 'selected' so unchecked accounts are never executed
+  const [executionScope, setExecutionScope] = useState<'all' | 'selected'>('selected');
 
   // Running state
   const [isRunning, setIsRunning] = useState(false);
@@ -110,7 +113,11 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
       timestamp: new Date().toLocaleTimeString('zh-CN'),
       accountId: accounts[0]?.id || 'system',
       level: 'info',
-      message: `[${accounts[0]?.id || 'system'}] 工作台就绪 (双击账号可编辑更新 Cookie / cURL，点击任务右侧[辅助完成]可单点执行)`,
+      message: `${
+        accounts[0]
+          ? `[操作账号: ${formatAccountLabel(accounts[0].id, accounts[0].nickname)}]`
+          : '[系统]'
+      } 工作台就绪 (已启用账号隔离与权限控制：仅执行已勾选账号，双击账号可编辑 Cookie / cURL)`,
     },
   ]);
 
@@ -120,6 +127,8 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [isSyncingPoints, setIsSyncingPoints] = useState(false);
   const [copiedDetail, setCopiedDetail] = useState(false);
+  const [copiedLogs, setCopiedLogs] = useState(false);
+  const [logViewScope, setLogViewScope] = useState<'current' | 'all'>('current');
   const [isVersionModalOpen, setIsVersionModalOpen] = useState(false);
   const [assistingTask, setAssistingTask] = useState<WorkBuddyTask | null>(null);
   const [executingTaskId, setExecutingTaskId] = useState<string | null>(null);
@@ -181,6 +190,11 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   // Current active account
   const currentAccount = accounts.find((a) => a.id === currentAccountId) || accounts[0];
 
+  // Clear stale task selection when switching accounts to prevent cross-account bleed
+  useEffect(() => {
+    setSelectedTaskId(null);
+  }, [currentAccountId]);
+
   // Current selected task for inspection
   const selectedTask = currentAccount?.tasks.find((t) => t.id === selectedTaskId);
 
@@ -210,9 +224,10 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   // Fetch real-time live points directly from official service (NEVER local arithmetic)
   const handleFetchLivePoints = async (account: WorkBuddyAccount, showLog = true): Promise<number | null> => {
     if (!account) return null;
+    const accPrefix = `[操作账号: ${formatAccountLabel(account.id, account.nickname)}]`;
     if (!account.credentials) {
       if (showLog) {
-        addLog('warn', account.id, `[${account.id}] 尚未配置 Cookie/Token，请双击账号进行配置`);
+        addLog('warn', account.id, `${accPrefix} 尚未配置 Cookie/Token，请双击账号进行配置`);
       }
       return null;
     }
@@ -234,7 +249,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
           resData.available_credits;
 
         if (liveCredit !== undefined && liveCredit !== null) {
-          const numericPoints = Number(liveCredit);
+          const numericPoints = roundPoints(liveCredit);
           const timeStr = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
           setAccounts((prev) =>
             prev.map((a) =>
@@ -249,7 +264,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
             )
           );
           if (showLog) {
-            addLog('success', account.id, `[${account.id}] 官方服务实时积分已同步：${numericPoints} 积分`);
+            addLog('success', account.id, `${accPrefix} 官方服务实时积分已同步：${numericPoints} 积分`);
           }
           return numericPoints;
         }
@@ -257,12 +272,12 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
 
       if (summaryRes.status === 401) {
         setAccounts((prev) => prev.map((a) => (a.id === account.id ? { ...a, status: '异常' } : a)));
-        addLog('error', account.id, `[${account.id}] 官方服务鉴权 401 Unauthorized：Cookie 已失效，请双击账号更新`);
+        addLog('error', account.id, `${accPrefix} 官方服务鉴权 401 Unauthorized：Cookie 已失效，请双击账号更新`);
       }
       return null;
     } catch (err: unknown) {
       if (showLog) {
-        addLog('warn', account.id, `[${account.id}] 调服务获取积分失败: ${err instanceof Error ? err.message : '网络错误'}`);
+        addLog('warn', account.id, `${accPrefix} 调服务获取积分失败: ${err instanceof Error ? err.message : '网络错误'}`);
       }
       return null;
     } finally {
@@ -273,6 +288,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   // Sync official tasks for an account
   const handleSyncOfficialTasks = async (account: WorkBuddyAccount, showLog = false) => {
     if (!account?.credentials) return;
+    const accPrefix = `[操作账号: ${formatAccountLabel(account.id, account.nickname)}]`;
     const tasksRes = await workbuddyRealApi.getGrowthTasks(
       account.credentials,
       account.authType,
@@ -287,7 +303,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
           prev.map((a) => (a.id === account.id ? { ...a, tasks: mapped } : a))
         );
         if (showLog) {
-          addLog('success', account.id, `[${account.id}] 已同步 ${mapped.length} 项官方最新任务进度`);
+          addLog('success', account.id, `${accPrefix} 已同步 ${mapped.length} 项官方最新任务进度`);
         }
       }
     }
@@ -295,22 +311,38 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
 
   // Add new account
   const handleAddAccount = (newAcc: WorkBuddyAccount) => {
-    setAccounts((prev) => [newAcc, ...prev]);
-    setSelectedAccountIds((prev) => [...prev, newAcc.id]);
-    setCurrentAccountId(newAcc.id);
-    addLog('success', newAcc.id, `成功添加账号 [${newAcc.id}] (${newAcc.region})`);
-    if (newAcc.credentials) {
-      handleFetchLivePoints(newAcc, true);
-      handleSyncOfficialTasks(newAcc, true);
+    const normalizedAcc: WorkBuddyAccount = {
+      ...newAcc,
+      points: roundPoints(newAcc.points),
+    };
+    setAccounts((prev) => [normalizedAcc, ...prev]);
+    setSelectedAccountIds((prev) => [...prev, normalizedAcc.id]);
+    setCurrentAccountId(normalizedAcc.id);
+    addLog(
+      'success',
+      normalizedAcc.id,
+      `[操作账号: ${formatAccountLabel(normalizedAcc.id, normalizedAcc.nickname)}] 成功添加账号 (${normalizedAcc.region})`
+    );
+    if (normalizedAcc.credentials) {
+      handleFetchLivePoints(normalizedAcc, true);
+      handleSyncOfficialTasks(normalizedAcc, true);
     }
   };
 
   // Save edited account (called from AccountEditModal)
   const handleSaveAccount = (updatedAcc: WorkBuddyAccount) => {
-    setAccounts((prev) => prev.map((a) => (a.id === updatedAcc.id ? updatedAcc : a)));
-    addLog('success', updatedAcc.id, `账号 [${updatedAcc.id}] 凭据与信息已成功更新并保存`);
-    handleFetchLivePoints(updatedAcc, true);
-    handleSyncOfficialTasks(updatedAcc, true);
+    const normalizedAcc: WorkBuddyAccount = {
+      ...updatedAcc,
+      points: roundPoints(updatedAcc.points),
+    };
+    setAccounts((prev) => prev.map((a) => (a.id === normalizedAcc.id ? normalizedAcc : a)));
+    addLog(
+      'success',
+      normalizedAcc.id,
+      `[操作账号: ${formatAccountLabel(normalizedAcc.id, normalizedAcc.nickname)}] 凭据与信息已成功更新并保存`
+    );
+    handleFetchLivePoints(normalizedAcc, true);
+    handleSyncOfficialTasks(normalizedAcc, true);
   };
 
   // Delete selected accounts
@@ -330,10 +362,11 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     });
     setSelectedAccountIds([]);
     setShowDeleteConfirm(false);
-    addLog('warn', 'system', `已删除所选 ${count} 个账号`);
+    addLog('warn', 'system', `[系统] 已删除所选 ${count} 个账号`);
   };
 
   const handleSelectAll = () => {
+    setExecutionScope('selected');
     if (selectedAccountIds.length === filteredAccounts.length) {
       setSelectedAccountIds([]);
     } else {
@@ -342,6 +375,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   };
 
   const handleInverseSelect = () => {
+    setExecutionScope('selected');
     const newSelected = filteredAccounts
       .map((a) => a.id)
       .filter((id) => !selectedAccountIds.includes(id));
@@ -350,6 +384,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
 
   const toggleSelectAccount = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    setExecutionScope('selected');
     setSelectedAccountIds((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     );
@@ -362,7 +397,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
       ...prev,
       lastRefreshed: timeStr,
     }));
-    addLog('info', 'system', `开始批量同步全部 ${accounts.length} 个账号的官方实时积分与任务列表...`);
+    addLog('info', 'system', `[系统] 开始批量同步全部 ${accounts.length} 个账号的官方实时积分与任务列表...`);
 
     for (const acc of accounts) {
       if (acc.credentials) {
@@ -370,12 +405,13 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
         await handleSyncOfficialTasks(acc, false);
       }
     }
-    addLog('success', 'system', '全部账号官方实时积分与任务状态刷新完成');
+    addLog('success', 'system', '[系统] 全部账号官方实时积分与任务状态刷新完成');
   };
 
   // Toggle Cat Auto-Travel
   const toggleCatAutoTravel = () => {
     if (!currentAccount) return;
+    const accPrefix = `[操作账号: ${formatAccountLabel(currentAccount.id, currentAccount.nickname)}]`;
     setAccounts((prev) =>
       prev.map((acc) =>
         acc.id === currentAccount.id
@@ -392,14 +428,15 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     addLog(
       'info',
       currentAccount.id,
-      `[${currentAccount.id}] ${!currentAccount.catTravel.autoTravel ? '已开启自动旅行' : '已关闭自动旅行'}`
+      `${accPrefix} ${!currentAccount.catTravel.autoTravel ? '已开启自动旅行' : '已关闭自动旅行'}`
     );
   };
 
   // Refresh Cat Travel Status for current account
   const handleRefreshCatTravelStatus = async () => {
     if (!currentAccount || isRunning) return;
-    addLog('info', currentAccount.id, `[${currentAccount.id}] 正在查询猫猫旅行实时状态 (/status)...`);
+    const accPrefix = `[操作账号: ${formatAccountLabel(currentAccount.id, currentAccount.nickname)}]`;
+    addLog('info', currentAccount.id, `${accPrefix} 正在查询猫猫旅行实时状态 (/status)...`);
     try {
       const res = await workbuddyRealApi.getCatTravelStatus(
         currentAccount.credentials,
@@ -433,12 +470,12 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
           )
         );
         await handleFetchLivePoints(currentAccount, false);
-        addLog('success', currentAccount.id, `[${currentAccount.id}] 猫猫旅行状态已更新：${statusText}`);
+        addLog('success', currentAccount.id, `${accPrefix} 猫猫旅行状态已更新：${statusText}`);
       } else {
-        addLog('info', currentAccount.id, `[${currentAccount.id}] 猫猫状态已更新完成 (${timeStr})`);
+        addLog('info', currentAccount.id, `${accPrefix} 猫猫状态已更新完成 (${timeStr})`);
       }
     } catch {
-      addLog('warn', currentAccount.id, `[${currentAccount.id}] 猫猫状态查询未完成`);
+      addLog('warn', currentAccount.id, `${accPrefix} 猫猫状态查询未完成`);
     }
   };
 
@@ -450,36 +487,38 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
       return { ok: false, message: '请先双击左侧账号配置有效的 Cookie 或 cURL 凭据' };
     }
 
+    const accPrefix = `[操作账号: ${formatAccountLabel(currentAccount.id, currentAccount.nickname)}]`;
     const isClaimOnly = task.status === '待领奖' || (task.targetProgress > 0 && task.currentProgress >= task.targetProgress);
     addLog(
       'info',
       currentAccount.id,
       isClaimOnly
-        ? `[${currentAccount.id}] 任务【${task.name}】已达标，正在直接自动领取奖励...`
-        : `[${currentAccount.id}] 正在执行任务【${task.name}】并请求领奖...`
+        ? `${accPrefix} 任务【${task.name}】已达标，正在直接自动领取奖励...`
+        : `${accPrefix} 正在执行任务【${task.name}】并请求领奖...`
     );
-    const pointsBefore = currentAccount.points;
+    const pointsBefore = roundPoints(currentAccount.points);
 
     const execRes = await workbuddyRealApi.executeGrowthTask(
       task,
       currentAccount.credentials,
       currentAccount.authType,
       currentAccount.extraHeaders,
-      (level, msg) => addLog(level, currentAccount.id, `[${currentAccount.id}] [${task.name}] ${msg}`)
+      (level, msg) => addLog(level, currentAccount.id, `${accPrefix} [${task.name}] ${msg}`)
     );
 
-    // Always call official API to update live points & task status after execution
+    // Wait briefly so billing ledger reflects claimed reward, then sync live points & task status
+    await new Promise((r) => setTimeout(r, 450));
     const updatedPoints = await handleFetchLivePoints(currentAccount, false);
     await handleSyncOfficialTasks(currentAccount, false);
 
-    const pointsAfter = updatedPoints ?? currentAccount.points;
+    const pointsAfter = roundPoints(updatedPoints ?? pointsBefore);
     const gained = pointsAfter > pointsBefore;
 
     if (execRes.claimed || gained) {
       addLog(
         'success',
         currentAccount.id,
-        `[${currentAccount.id}] 任务【${task.name}】完成并领奖！已调官方服务实时更新积分：${pointsAfter}`
+        `${accPrefix} 任务【${task.name}】完成并领奖！已调官方服务实时更新积分：${pointsAfter}`
       );
       return {
         ok: true,
@@ -491,7 +530,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     addLog(
       'warn',
       currentAccount.id,
-      `[${currentAccount.id}] 任务【${task.name}】：${execRes.detail}（当前官方实时积分：${pointsAfter}）`
+      `${accPrefix} 任务【${task.name}】：${execRes.detail}（当前官方实时积分：${pointsAfter}）`
     );
     return {
       ok: false,
@@ -500,21 +539,45 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     };
   };
 
+  // Resolve strict target accounts according to permission control scope
+  const getTargetAccountsWithPermissionCheck = (actionLabel: string): WorkBuddyAccount[] => {
+    if (executionScope === 'selected') {
+      const selected = accounts.filter((a) => selectedAccountIds.includes(a.id));
+      if (selected.length === 0) {
+        addLog('warn', currentAccount?.id || 'system', `[权限控制] 未勾选任何账号，已阻止执行「${actionLabel}」！请在左侧勾选目标账号`);
+        setRunningStatusText('请先勾选账号');
+        return [];
+      }
+      const labels = selected.map((a) => formatAccountLabel(a.id, a.nickname)).join('、');
+      addLog(
+        'info',
+        selected[0].id,
+        `[权限控制] 仅执行已勾选的 ${selected.length} 个账号：${labels}（其余未勾选账号已严格隔离跳过）`
+      );
+      return selected;
+    }
+
+    if (accounts.length === 0) {
+      addLog('warn', 'system', `[权限控制] 当前账号列表为空，无法执行「${actionLabel}」`);
+      return [];
+    }
+
+    addLog(
+      'info',
+      currentAccount?.id || accounts[0].id,
+      `[权限控制] 当前选择「全部账号」，将依次执行共 ${accounts.length} 个账号`
+    );
+    return accounts;
+  };
+
   // Execute All Daily Tasks
   const handleExecuteAllDaily = async () => {
     if (isRunning) return;
-    const targetAccounts =
-      executionScope === 'all'
-        ? accounts
-        : accounts.filter((a) => selectedAccountIds.includes(a.id));
-
-    if (targetAccounts.length === 0) {
-      addLog('warn', 'system', '请先勾选要执行任务的账号！');
-      return;
-    }
+    const targetAccounts = getTargetAccountsWithPermissionCheck('一键执行全部日常');
+    if (targetAccounts.length === 0) return;
 
     setIsRunning(true);
-    setRunningStatusText('正在执行日常任务...');
+    setRunningStatusText(`正在执行 (${targetAccounts.length}个账号)...`);
     setStats((prev) => ({
       ...prev,
       running: targetAccounts.length,
@@ -533,11 +596,11 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
             skipped: delta.skips,
           }));
 
-          // Merge updated accounts in real time (reflecting live API points after each task)
+          // Merge ONLY target accounts in real time (preserving strict account isolation)
           setAccounts((prev) =>
             prev.map((acc) => {
               const found = currentProgressAccounts.find((p) => p.id === acc.id);
-              return found || acc;
+              return found ? { ...found, points: roundPoints(found.points) } : acc;
             })
           );
         }
@@ -546,7 +609,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
       setAccounts((prev) =>
         prev.map((acc) => {
           const found = updated.find((u) => u.id === acc.id);
-          return found || acc;
+          return found ? { ...found, points: roundPoints(found.points) } : acc;
         })
       );
       setRunningStatusText('全部任务执行完毕');
@@ -563,42 +626,37 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   // Execute Streak / Daily Check-in + live API points refresh
   const handleExecuteStreak = async () => {
     if (isRunning) return;
-    const targetAccounts =
-      executionScope === 'all'
-        ? accounts
-        : accounts.filter((a) => selectedAccountIds.includes(a.id));
-
-    if (targetAccounts.length === 0) {
-      addLog('warn', 'system', '请先勾选要签到/打卡的账号！');
-      return;
-    }
+    const targetAccounts = getTargetAccountsWithPermissionCheck('签到 / 每日活跃');
+    if (targetAccounts.length === 0) return;
 
     setIsRunning(true);
     setRunningStatusText('正在执行签到与每日活跃...');
-    addLog('info', 'system', `开始为 ${targetAccounts.length} 个账号执行签到打卡并同步实时积分`);
 
     for (const acc of targetAccounts) {
+      const accPrefix = `[操作账号: ${formatAccountLabel(acc.id, acc.nickname)}]`;
       try {
         const streakRes = await workbuddyRealApi.getDailyStreak(
           acc.credentials,
           acc.authType,
           acc.extraHeaders
         );
+        await new Promise((r) => setTimeout(r, 300));
         const livePts = await handleFetchLivePoints(acc, false);
+        const displayPts = roundPoints(livePts ?? acc.points);
         if (streakRes.ok) {
           const days = streakRes.data?.data?.streak?.days || streakRes.data?.streak?.days || 1;
           addLog(
             'success',
             acc.id,
-            `[${acc.id}] 每日活跃打卡完成 (连续活跃 ${days} 天，今日已达标 · 官方实时积分: ${livePts ?? acc.points})`
+            `${accPrefix} 每日活跃打卡完成 (连续活跃 ${days} 天，今日已达标 · 官方实时积分: ${displayPts})`
           );
         } else if (streakRes.status === 401) {
-          addLog('error', acc.id, `[${acc.id}] 签到失败：Cookie 失效，请双击账号更新`);
+          addLog('error', acc.id, `${accPrefix} 签到失败：Cookie 失效，请双击账号更新`);
         } else {
-          addLog('info', acc.id, `[${acc.id}] 每日签到接口调用完成 (状态码: ${streakRes.status})`);
+          addLog('info', acc.id, `${accPrefix} 每日签到接口调用完成 (状态码: ${streakRes.status} · 实时积分: ${displayPts})`);
         }
       } catch {
-        addLog('warn', acc.id, `[${acc.id}] 签到请求未完成`);
+        addLog('warn', acc.id, `${accPrefix} 签到请求未完成`);
       }
     }
 
@@ -609,25 +667,22 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   // Complete & Claim Tasks (prioritize claiming already-completed tasks first, then run remaining pending tasks)
   const handleClaimCompletedTasks = async () => {
     if (isRunning) return;
-    const targetAccounts =
-      executionScope === 'all'
-        ? accounts
-        : accounts.filter((a) => selectedAccountIds.includes(a.id));
-
-    if (targetAccounts.length === 0) {
-      addLog('warn', 'system', '请先勾选要执行领奖的账号！');
-      return;
-    }
+    const targetAccounts = getTargetAccountsWithPermissionCheck('完成任务并领奖');
+    if (targetAccounts.length === 0) return;
 
     setIsRunning(true);
     setRunningStatusText('正在领取已完成奖励并执行任务...');
-    addLog('info', 'system', `开始为 ${targetAccounts.length} 个账号同步任务状态、优先领取已达标奖励并执行未完成任务`);
 
     for (const acc of targetAccounts) {
+      const accPrefix = `[操作账号: ${formatAccountLabel(acc.id, acc.nickname)}]`;
       if (!acc.credentials) {
-        addLog('warn', acc.id, `[${acc.id}] 未配置凭据，已跳过`);
+        addLog('warn', acc.id, `${accPrefix} 未配置凭据，已跳过`);
         continue;
       }
+
+      let runningPoints = roundPoints(acc.points);
+      const initPts = await handleFetchLivePoints(acc, false);
+      if (initPts !== null) runningPoints = initPts;
 
       // Refresh latest tasks from server first so any completed tasks get detected as 待领奖
       let latestTasks = acc.tasks;
@@ -648,25 +703,28 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
       const orderedTasks = [...readyToClaim, ...otherPending];
 
       for (const t of orderedTasks) {
-        const ptsBefore = acc.points;
-        addLog('info', acc.id, `[${acc.id}] 开始处理任务「${t.name}」...`);
+        const ptsBefore = runningPoints;
+        addLog('info', acc.id, `${accPrefix} 开始处理任务「${t.name}」...`);
         const execRes = await workbuddyRealApi.executeGrowthTask(
           t,
           acc.credentials,
           acc.authType,
           acc.extraHeaders,
-          (level, msg) => addLog(level, acc.id, `[${acc.id}] [${t.name}] ${msg}`)
+          (level, msg) => addLog(level, acc.id, `${accPrefix} [${t.name}] ${msg}`)
         );
-        // Real-time official API points update after EVERY task!
+        // Wait briefly so billing ledger reflects claimed reward, then update points
+        await new Promise((r) => setTimeout(r, 450));
         const livePts = await handleFetchLivePoints(acc, false);
+        if (livePts !== null) runningPoints = livePts;
+
         if (execRes.claimed || (livePts !== null && livePts > ptsBefore)) {
           addLog(
             'success',
             acc.id,
-            `[${acc.id}] 成功完成并领取「${t.name}」奖励 (+${t.reward}分)，实时总积分：${livePts ?? acc.points}`
+            `${accPrefix} 成功完成并领取「${t.name}」奖励 (+${t.reward}分)，实时总积分：${runningPoints}`
           );
         } else {
-          addLog('warn', acc.id, `[${acc.id}] 「${t.name}」未领奖：${execRes.detail}`);
+          addLog('warn', acc.id, `${accPrefix} 「${t.name}」未领奖：${execRes.detail}（当前实时积分：${runningPoints}）`);
         }
       }
       await handleSyncOfficialTasks(acc, false);
@@ -679,11 +737,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   // Execute Cat Travel Only
   const handleExecuteCatTravel = async () => {
     if (isRunning) return;
-    const targetAccounts =
-      executionScope === 'all'
-        ? accounts
-        : accounts.filter((a) => selectedAccountIds.includes(a.id));
-
+    const targetAccounts = getTargetAccountsWithPermissionCheck('一键猫猫旅行');
     if (targetAccounts.length === 0) return;
 
     setIsRunning(true);
@@ -696,7 +750,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
           setAccounts((prev) =>
             prev.map((acc) => {
               const found = currentProgressAccounts.find((p) => p.id === acc.id);
-              return found || acc;
+              return found ? { ...found, points: roundPoints(found.points) } : acc;
             })
           );
         }
@@ -704,7 +758,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
       setAccounts((prev) =>
         prev.map((acc) => {
           const found = updated.find((u) => u.id === acc.id);
-          return found || acc;
+          return found ? { ...found, points: roundPoints(found.points) } : acc;
         })
       );
     } finally {
@@ -718,7 +772,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     automationEngine.cancel();
     setIsRunning(false);
     setRunningStatusText('已取消');
-    addLog('warn', 'system', '用户取消了当前的批量执行操作');
+    addLog('warn', currentAccount?.id || 'system', '[系统] 用户取消了当前的批量执行操作');
   };
 
   // Filter tasks in table
@@ -727,6 +781,43 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     if (taskFilter === '已领奖') return task.status === '已领奖';
     return true;
   });
+
+  // Account-isolated log view filtering
+  const displayedLogs =
+    logViewScope === 'current' && currentAccount
+      ? logs.filter((l) => l.accountId === currentAccount.id)
+      : logs;
+
+  const handleCopyLogs = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (displayedLogs.length === 0) return;
+    const scopeTitle =
+      logViewScope === 'current' && currentAccount
+        ? `账号 ${formatAccountLabel(currentAccount.id, currentAccount.nickname)} 日志 (${displayedLogs.length} 条)`
+        : `全部账号汇总日志 (${displayedLogs.length} 条)`;
+    const content = [
+      `=== WorkBuddy 自动化工具 · ${scopeTitle} ===`,
+      ...displayedLogs
+        .slice()
+        .reverse()
+        .map((l) => `[${l.timestamp}] [${l.level.toUpperCase()}] ${l.message}`),
+    ].join('\n');
+
+    try {
+      await navigator.clipboard.writeText(content);
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = content;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+    }
+    setCopiedLogs(true);
+    setTimeout(() => setCopiedLogs(false), 2000);
+  };
 
   const copyDetailText = (text: string) => {
     navigator.clipboard.writeText(text);
@@ -1010,7 +1101,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                 <div className="flex items-center justify-end gap-2.5">
                   <div className="text-right">
                     <div className="text-2xl font-bold font-mono text-emerald-400 tracking-tight flex items-baseline justify-end gap-1">
-                      <span>{currentAccount.points}</span>
+                      <span>{roundPoints(currentAccount.points)}</span>
                       <span className="text-xs text-slate-400 font-normal">积分</span>
                     </div>
                   </div>
@@ -1288,7 +1379,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                   onChange={() => setExecutionScope('selected')}
                   className="text-emerald-500 focus:ring-emerald-500"
                 />
-                <span>所选账号 ({selectedAccountIds.length})</span>
+                <span>仅已选账号 ({selectedAccountIds.length})</span>
               </label>
               <span className="text-[11px] text-slate-400 font-mono ml-1 whitespace-nowrap truncate max-w-[160px]" title={runningStatusText}>
                 {runningStatusText}
@@ -1366,18 +1457,69 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
           onClick={() => setIsLogOpen((prev) => !prev)}
           className="shrink-0 px-4 py-0.5 border-b border-slate-800/80 flex items-center justify-between text-[11px] font-mono text-slate-400 cursor-pointer hover:bg-slate-900/60 select-none"
         >
-          <div className="truncate flex items-center gap-2">
-            <span className="text-emerald-400 font-semibold">日志控制台 ({logs.length})</span>
+          <div className="truncate flex items-center gap-2 min-w-0">
+            <span className="text-emerald-400 font-semibold shrink-0">
+              日志控制台 ({displayedLogs.length}/{logs.length})
+            </span>
             <span className="text-slate-600">|</span>
-            <span className="text-slate-200 truncate">{logs[0]?.message || '等待任务开始...'}</span>
+            <span className="text-slate-200 truncate">{displayedLogs[0]?.message || '当前账号暂无运行日志...'}</span>
           </div>
-          <div className="flex items-center gap-3 shrink-0 ml-2">
+          <div className="flex items-center gap-2.5 shrink-0 ml-2">
+            {/* Account isolation toggle */}
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="flex items-center bg-slate-900 border border-slate-800 rounded p-0.5 text-[10px]"
+            >
+              <button
+                type="button"
+                onClick={() => setLogViewScope('current')}
+                className={`px-1.5 py-0.2 rounded transition-colors cursor-pointer ${
+                  logViewScope === 'current'
+                    ? 'bg-emerald-600/30 text-emerald-300 font-medium'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                仅当前账号
+              </button>
+              <button
+                type="button"
+                onClick={() => setLogViewScope('all')}
+                className={`px-1.5 py-0.2 rounded transition-colors cursor-pointer ${
+                  logViewScope === 'all'
+                    ? 'bg-slate-700 text-slate-100 font-medium'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                全部日志
+              </button>
+            </div>
+
+            {/* One-click Copy Logs */}
+            <button
+              type="button"
+              onClick={handleCopyLogs}
+              disabled={displayedLogs.length === 0}
+              title="一键复制当前视图下的全部日志"
+              className={`px-2 py-0.5 rounded border text-[10px] flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-40 ${
+                copiedLogs
+                  ? 'bg-emerald-600/20 border-emerald-500/40 text-emerald-300'
+                  : 'bg-slate-900 hover:bg-slate-800 border-slate-700 text-slate-300'
+              }`}
+            >
+              {copiedLogs ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+              <span>{copiedLogs ? '已复制' : '复制日志'}</span>
+            </button>
+
             {isLogOpen && (
               <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
-                  setLogs([]);
+                  if (logViewScope === 'current' && currentAccount) {
+                    setLogs((prev) => prev.filter((l) => l.accountId !== currentAccount.id));
+                  } else {
+                    setLogs([]);
+                  }
                 }}
                 className="text-slate-500 hover:text-slate-300 transition-colors cursor-pointer"
               >
@@ -1400,8 +1542,8 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
 
         {/* Log Content Body */}
         {isLogOpen && (
-          <div className="flex-1 min-h-0 px-4 py-1.5 overflow-y-auto font-mono text-[11px] space-y-1">
-            {logs.map((log) => (
+          <div className="flex-1 min-h-0 px-4 py-1.5 overflow-y-auto font-mono text-[11px] space-y-1 select-text">
+            {displayedLogs.map((log) => (
               <div key={log.id} className="flex items-start gap-2 leading-relaxed">
                 <span className="text-slate-600 shrink-0">{log.timestamp}</span>
                 <span
@@ -1419,6 +1561,11 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                 </span>
               </div>
             ))}
+            {displayedLogs.length === 0 && (
+              <div className="py-4 text-center text-slate-500">
+                当前账号暂无运行日志（已启用账号日志隔离）
+              </div>
+            )}
           </div>
         )}
       </div>

@@ -177,10 +177,10 @@ export function getTaskRecipe(task: WorkBuddyTask): TaskActionRecipe {
       targetUrl: webWorkspaceUrl,
       growthCenterUrl,
       steps: [
-        '点击下方「立即自动完成并领奖」，工具将自动安装并启用 1 个官方热门技能',
-        '自动发起携带该技能的真实对话并上报 skill_install_success / skill_used 埋点后自动领奖',
+        '点击下方「立即自动完成并领奖」，工具将查询官方技能池并调用 /v2/user-asset/skill/install 安装技能',
+        '自动在云端会话中使用该技能并上报 skill_detail_show / skill_installed / skill_action 等官方埋点后自动领奖',
       ],
-      autoNote: '尝鲜达人任务：已区分技能安装与分享接口，避免误路由。',
+      autoNote: '尝鲜达人任务：已接入官方技能安装与技能使用上报协议。',
     };
   }
 
@@ -191,10 +191,10 @@ export function getTaskRecipe(task: WorkBuddyTask): TaskActionRecipe {
       targetUrl: webWorkspaceUrl,
       growthCenterUrl,
       steps: [
-        '点击下方「立即自动完成并领奖」，工具将自动访问资料库文档接口并上报阅读完成埋点',
-        '自动触发 1 次资料库主题对话后立即尝试领取积分奖励',
+        '点击下方「立即自动完成并领奖」，工具将访问官方资料库 NetDrive/TDrive 列表接口并触发文件同步事件',
+        '上报 web_page_show / asset_cloud_list_show / asset_cloud_sync 埋点并完成对话后立即尝试领奖',
       ],
-      autoNote: '资料库任务：已独立识别并匹配资料库文档阅读与埋点协议。',
+      autoNote: '资料库任务：已接入官方网盘鉴权与资料库页面行为埋点协议。',
     };
   }
 

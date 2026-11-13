@@ -113,9 +113,9 @@ npm run build:exe
 npm run build:mac
 
 # 输出产物位于 release/ 目录:
-# - workbuddyTools-Setup-1.3.1.exe
-# - workbuddyTools-1.3.1-x64.dmg (Intel)
-# - workbuddyTools-1.3.1-arm64.dmg (M芯片)`}
+# - workbuddyTools-Setup-1.3.2.exe
+# - workbuddyTools-1.3.2-x64.dmg (Intel)
+# - workbuddyTools-1.3.2-arm64.dmg (M芯片)`}
             </pre>
           </div>
 

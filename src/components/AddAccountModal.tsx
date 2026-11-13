@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { X, UserPlus, Key, Globe, Shield, Sparkles, RefreshCw, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { WorkBuddyAccount, AccountRegion } from '../types/workbuddy';
 import { DEFAULT_TASKS_TEMPLATE } from '../utils/initialData';
-import { workbuddyRealApi, extractCleanCredentials } from '../utils/workbuddyRealApi';
+import { workbuddyRealApi, extractCleanCredentials, roundPoints } from '../utils/workbuddyRealApi';
 
 interface AddAccountModalProps {
   isOpen: boolean;
@@ -73,7 +73,8 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
           resData.available_credits;
 
         if (liveCredit !== undefined && liveCredit !== null) {
-          setPoints(Number(liveCredit));
+          const cleanCredit = roundPoints(liveCredit);
+          setPoints(cleanCredit);
           const extraNote = cleaned.isExtractedFromCurl
             ? `已自动提取 cURL 凭据${headerCount > 0 ? `及 ${headerCount} 个请求头` : ''}${cleaned.autoCompletedRealm ? ' (已自动补全 copilot 认证域)' : ''}！`
             : cleaned.autoCompletedRealm
@@ -81,7 +82,7 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
             : '接口验证成功！';
           setTestResult({
             success: true,
-            message: `${extraNote} 官方实时积分：${liveCredit}`,
+            message: `${extraNote} 官方实时积分：${cleanCredit}`,
           });
           return;
         }
@@ -137,7 +138,7 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
       nickname: nickname.trim() || accountId.trim(),
       region,
       status: '正常',
-      points: Number(points) || 0,
+      points: roundPoints(points),
       authType: cleaned.authType,
       credentials: cleaned.credentials || 'mock_credentials',
       extraHeaders: cleaned.extraHeaders,

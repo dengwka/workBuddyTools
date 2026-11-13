@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Key, Globe, Shield, Sparkles, RefreshCw, CheckCircle2, AlertCircle, Loader2, Edit3 } from 'lucide-react';
 import { WorkBuddyAccount, AccountRegion } from '../types/workbuddy';
-import { workbuddyRealApi, extractCleanCredentials } from '../utils/workbuddyRealApi';
+import { workbuddyRealApi, extractCleanCredentials, roundPoints } from '../utils/workbuddyRealApi';
 
 interface AccountEditModalProps {
   isOpen: boolean;
@@ -41,7 +41,7 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
       setAuthType(account.authType || 'cookie');
       setCredentials(account.credentials || '');
       setProxyUrl(account.proxyUrl || '');
-      setPoints(account.points || 0);
+      setPoints(roundPoints(account.points));
       setTestResult(null);
       setErrorMessage('');
     }
@@ -84,7 +84,8 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
           resData.available_credits;
 
         if (liveCredit !== undefined && liveCredit !== null) {
-          setPoints(Number(liveCredit));
+          const cleanCredit = roundPoints(liveCredit);
+          setPoints(cleanCredit);
           const extraNote = cleaned.isExtractedFromCurl
             ? `已自动提取 cURL 凭据${headerCount > 0 ? `及 ${headerCount} 个请求头` : ''}${cleaned.autoCompletedRealm ? ' (已自动补全 copilot 认证域)' : ''}！`
             : cleaned.autoCompletedRealm
@@ -92,8 +93,8 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
             : '接口验证成功！';
           setTestResult({
             success: true,
-            message: `${extraNote} 官方实时积分已同步：${liveCredit} 积分`,
-            livePoints: Number(liveCredit),
+            message: `${extraNote} 官方实时积分已同步：${cleanCredit} 积分`,
+            livePoints: cleanCredit,
           });
           return;
         }
@@ -152,7 +153,7 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
       credentials: cleaned.credentials,
       extraHeaders: cleaned.extraHeaders || account.extraHeaders,
       proxyUrl: proxyUrl.trim() || undefined,
-      points: Number(points) || 0,
+      points: roundPoints(points),
       status: testResult?.success ? '正常' : account.status,
       lastUpdated: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
     };
