@@ -561,14 +561,267 @@ export class WorkBuddyRealApi {
     );
   }
 
-  // 9. Daily check-in / streak
+  // 9. Daily check-in / streak (POST check-in + GET query)
   public async getDailyStreak(
     credentials: string,
     authType: 'cookie' | 'token',
     extraHeaders?: Record<string, string>
   ) {
+    // First attempt active POST check-in / streak report
+    await this.request('/activity/growth/streak', 'POST', credentials, authType, {}, extraHeaders).catch(() => null);
+    await this.request('/activity/growth/checkin', 'POST', credentials, authType, {}, extraHeaders).catch(() => null);
     return this.request('/activity/growth/streak', 'GET', credentials, authType, undefined, extraHeaders);
   }
+
+  // 10. Execute a specific growth task (4-category automatic trigger + event reporting)
+  public async executeGrowthTask(
+    task: WorkBuddyTask | WorkBuddyRawTask,
+    credentials: string,
+    authType: 'cookie' | 'token',
+    extraHeaders?: Record<string, string>
+  ): Promise<{ triggered: boolean; claimed: boolean; status: number; detail: string }> {
+    const taskCode = 'task_code' in task ? task.task_code : task.id;
+    const title = 'title' in task ? task.title : task.name;
+    const jumpUrl = 'jump_url' in task ? task.jump_url : undefined;
+    const targetCount =
+      ('targetProgress' in task ? task.targetProgress : task.target_progress) ||
+      (title.includes('5') ? 5 : title.includes('3') ? 3 : 1);
+
+    // Spoof WorkBuddy 5.9.0 PC/Desktop headers for version-gated tasks (5.5.3+ / 5.9.0+ / PC)
+    const desktopHeaders: Record<string, string> = {
+      ...(extraHeaders || {}),
+      'X-Client-Platform': 'desktop',
+      'X-Client-Version': '5.9.0',
+      'X-App-Version': '5.9.0',
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) WorkBuddy/5.9.0 Chrome/131.0.0.0 Electron/33.2.0 Safari/537.36',
+    };
+
+    // Ensure task is accepted first
+    await this.acceptTasks([taskCode], credentials, authType, desktopHeaders).catch(() => null);
+
+    // Category-specific action payloads
+    const expertMatch = title.match(/体验「([^」]+)」/);
+    const expertName = expertMatch && !title.includes('发现应用') ? expertMatch[1] : undefined;
+
+    // If jump_url is present and points to workbuddy.cn, visit it first
+    if (jumpUrl && (jumpUrl.startsWith('/') || jumpUrl.startsWith('https://www.workbuddy.cn'))) {
+      await this.request(jumpUrl, 'GET', credentials, authType, undefined, desktopHeaders).catch(() => null);
+    }
+
+    // Trigger task completion & growth event endpoints for targetCount iterations
+    const iterations = Math.min(Math.max(targetCount, 1), 5);
+    let anyTriggerOk = false;
+
+    for (let i = 0; i < iterations; i++) {
+      const payload = {
+        task_code: taskCode,
+        event_type: taskCode,
+        action: 'complete',
+        progress: i + 1,
+        target_name: expertName || title,
+        client_version: '5.9.0',
+        platform: 'desktop',
+      };
+
+      const r1 = await this.request(
+        `/activity/growth/tasks/${taskCode}/complete`,
+        'POST',
+        credentials,
+        authType,
+        payload,
+        desktopHeaders
+      );
+      if (r1.ok) anyTriggerOk = true;
+
+      const r2 = await this.request(
+        '/activity/growth/tasks/complete',
+        'POST',
+        credentials,
+        authType,
+        payload,
+        desktopHeaders
+      );
+      if (r2.ok) anyTriggerOk = true;
+
+      const r3 = await this.request(
+        '/activity/growth/event',
+        'POST',
+        credentials,
+        authType,
+        payload,
+        desktopHeaders
+      );
+      if (r3.ok) anyTriggerOk = true;
+
+      const r4 = await this.request(
+        '/activity/growth/tasks/report',
+        'POST',
+        credentials,
+        authType,
+        payload,
+        desktopHeaders
+      );
+      if (r4.ok) anyTriggerOk = true;
+    }
+
+    // Immediately attempt to claim reward
+    const claimRes = await this.claimTaskReward(taskCode, credentials, authType, desktopHeaders);
+    const claimed =
+      claimRes.ok &&
+      claimRes.data?.code !== 400 &&
+      claimRes.data?.code !== 401 &&
+      !String(claimRes.data?.message || '').includes('not completed');
+
+    return {
+      triggered: anyTriggerOk,
+      claimed,
+      status: claimRes.status,
+      detail: claimed
+        ? `成功完成并领取奖励！`
+        : anyTriggerOk
+        ? `已上报任务进度，等待服务端核验或点击[辅助完成]`
+        : `需客户端会话交互，可点击右侧[辅助完成]快速搞定`,
+    };
+  }
+}
+
+export const OFFICIAL_TASK_DESCRIPTIONS: Record<string, { desc: string; target: number; reward: number }> = {
+  探索优秀灵感: {
+    desc: '体验1款「灵感」优秀案例。(PC · 截止 11.13 · 100 Credits + 5 能量)',
+    target: 1,
+    reward: 100,
+  },
+  '体验 WorkBuddy 「发现应用」': {
+    desc: '升级到电脑端5.5.3或以上版本，点击左上角「发现应用」进入任意一个 Buddy 应用。(截止 11.13)',
+    target: 1,
+    reward: 100,
+  },
+  '关注「腾讯 WorkBuddy」官方公众号': {
+    desc: '关注「腾讯 WorkBuddy」官方公众号满 24 小时，即可领取奖励。(100 Credits + 5 能量)',
+    target: 1,
+    reward: 100,
+  },
+  '体验「无畏契约拼豆专家」': {
+    desc: '即日起至11月13日，在专家页搜索并召唤「无畏契约拼豆专家」，完成一次对话。(100 Credits + 5 能量)',
+    target: 1,
+    reward: 100,
+  },
+  '体验「中国电商运营专家」': {
+    desc: '在专家页搜索并召唤「中国电商运营专家」，完成一次对话。(截止 11.13 · 50 Credits + 5 能量)',
+    target: 1,
+    reward: 50,
+  },
+  '体验「抖音策略师」': {
+    desc: '在专家页搜索并召唤「抖音策略师」，完成一次对话。(截止 11.13 · 50 Credits + 5 能量)',
+    target: 1,
+    reward: 50,
+  },
+  '体验「商家宣传页与海报设计师」': {
+    desc: '在专家页搜索并召唤「商家宣传页与海报设计师」，完成一次对话。(截止 11.13 · 50 Credits + 5 能量)',
+    target: 1,
+    reward: 50,
+  },
+  '体验「直播电商教练」': {
+    desc: '在专家页搜索并召唤「直播电商教练」，完成一次对话。(截止 11.13 · 50 Credits + 5 能量)',
+    target: 1,
+    reward: 50,
+  },
+  分享一个技能给好友: {
+    desc: '升级到电脑端至5.9.0或以上版本，前往「技能」列表点击任意一个技能，进入详情页通过「分享」发送技能给好友。(截止 11.18)',
+    target: 1,
+    reward: 100,
+  },
+  '召唤 3 次专家团': {
+    desc: '切换至「专家团」，召唤并使用 3 个不同的专家团队。(截止 11.13 · 100 Credits + 5 能量)',
+    target: 3,
+    reward: 100,
+  },
+  '召唤 5 次专家': {
+    desc: '召唤 5 位不同的专家并发起对话。(截止 11.13 · 智囊团长 · 100 Credits + 5 能量)',
+    target: 5,
+    reward: 100,
+  },
+  '使用 5 个模板': {
+    desc: '「新建任务」并使用 5 个不同的模板并发起对话。(截止 11.13 · 模板达人 · 100 Credits + 5 能量)',
+    target: 5,
+    reward: 100,
+  },
+  设置自动化任务: {
+    desc: '设置 1 个自动化任务。(截止 11.13 · 自动高手 · 100 Credits + 5 能量)',
+    target: 1,
+    reward: 100,
+  },
+};
+
+export function mapRawTaskToWorkBuddyTask(rt: any): WorkBuddyTask {
+  const title = (rt.title || rt.name || rt.task_name || rt.task_code || '').trim();
+  const preset = OFFICIAL_TASK_DESCRIPTIONS[title];
+
+  const rawStatus = String(rt.accept_status || rt.status || '').toLowerCase();
+  const isClaimed = rawStatus === 'claimed' || rawStatus === 'rewarded';
+  const isCompleted = rawStatus === 'completed' || rawStatus === 'finished' || rawStatus === 'done';
+
+  let targetProgress =
+    Number(
+      rt.target_progress ??
+        rt.total_progress ??
+        rt.target_count ??
+        rt.total_count ??
+        rt.target ??
+        preset?.target ??
+        (title.includes('5') ? 5 : title.includes('3') ? 3 : 1)
+    ) || 1;
+
+  let currentProgress = Number(
+    rt.current_progress ??
+      rt.progress ??
+      rt.current_count ??
+      rt.finish_count ??
+      (isClaimed || isCompleted ? targetProgress : 0)
+  );
+
+  if ((isClaimed || isCompleted) && currentProgress < targetProgress) {
+    currentProgress = targetProgress;
+  }
+
+  const reward = Number(rt.reward_credit ?? rt.reward ?? preset?.reward ?? 100);
+  const officialDesc =
+    rt.description ||
+    rt.sub_title ||
+    rt.desc ||
+    rt.tips ||
+    preset?.desc ||
+    '官方成长计划任务';
+
+  let status: WorkBuddyTask['status'] = '進行中' as any;
+  if (isClaimed) {
+    status = '已领奖';
+  } else if (title.includes('公众号')) {
+    status = isCompleted ? '进行中' : '需人工';
+  } else if (rawStatus === 'not_accepted') {
+    status = '未完成';
+  } else {
+    status = '进行中';
+  }
+
+  return {
+    id: rt.task_code || rt.id || title,
+    name: title,
+    status,
+    currentProgress,
+    targetProgress,
+    reward,
+    recentResult: isClaimed
+      ? '已领取奖励'
+      : isCompleted
+      ? '已达标可领奖'
+      : title.includes('公众号')
+      ? '需关注满24h领奖'
+      : '待完成 / 可点[辅助完成]',
+    reason: officialDesc,
+    autoExecutable: !title.includes('公众号'),
+  };
 }
 
 export const workbuddyRealApi = new WorkBuddyRealApi();

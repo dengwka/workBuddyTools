@@ -1,5 +1,5 @@
-import { WorkBuddyAccount, WorkBuddyTask, ExecutionLog } from '../types/workbuddy';
-import { workbuddyRealApi, WorkBuddyRawTask } from './workbuddyRealApi';
+import { WorkBuddyAccount, ExecutionLog } from '../types/workbuddy';
+import { workbuddyRealApi, WorkBuddyRawTask, mapRawTaskToWorkBuddyTask } from './workbuddyRealApi';
 
 export class AutomationEngine {
   private isCancelled = false;
@@ -10,6 +10,31 @@ export class AutomationEngine {
 
   public resetCancel() {
     this.isCancelled = false;
+  }
+
+  private async syncLivePointsFromServer(
+    account: WorkBuddyAccount,
+    creds: string,
+    authType: 'cookie' | 'token',
+    extraHeaders?: Record<string, string>
+  ): Promise<number | null> {
+    const resourceRes = await workbuddyRealApi.getResourceSummary(creds, authType, extraHeaders);
+    if (resourceRes.ok && resourceRes.data) {
+      const resData = resourceRes.data.data || resourceRes.data;
+      const totalPoints =
+        resData.TotalCredits ??
+        resData.total_credit ??
+        resData.balance ??
+        resData.platform_reward_credit ??
+        resData.available_credits;
+
+      if (totalPoints !== undefined && totalPoints !== null) {
+        account.points = Number(totalPoints);
+        account.lastUpdated = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        return account.points;
+      }
+    }
+    return null;
   }
 
   // Execute tasks connecting to real WorkBuddy APIs
@@ -83,48 +108,40 @@ export class AutomationEngine {
         }
       }
 
-      // 2. Fetch real user points & credits balance
-      const resourceRes = await workbuddyRealApi.getResourceSummary(creds, authType, extraHeaders);
-      if (resourceRes.ok && resourceRes.data) {
-        const resData = resourceRes.data.data || resourceRes.data;
-        const totalPoints =
-          resData.TotalCredits ??
-          resData.total_credit ??
-          resData.balance ??
-          resData.platform_reward_credit ??
-          resData.available_credits;
-
-        if (totalPoints !== undefined && totalPoints !== null) {
-          account.points = Number(totalPoints);
-          onProgress(
-            {
-              id: Math.random().toString(36).substring(2, 9),
-              timestamp: new Date().toLocaleTimeString(),
-              accountId: account.id,
-              level: 'info',
-              message: `[${account.id}] 成功同步 WorkBuddy 官方实时积分：${account.points} 积分`,
-            },
-            updated,
-            { successes, fails, skips }
-          );
-        }
-      } else if (resourceRes.status === 401) {
-        fails++;
-        account.status = '异常';
+      // 2. Fetch real user points & credits balance from official server
+      const initialLivePoints = await this.syncLivePointsFromServer(account, creds, authType, extraHeaders);
+      if (initialLivePoints !== null) {
         onProgress(
           {
             id: Math.random().toString(36).substring(2, 9),
             timestamp: new Date().toLocaleTimeString(),
             accountId: account.id,
-            level: 'error',
-            message: `[${account.id}] 官方接口返回 401 Unauthorized：Cookie 或 Token 已失效，请在设置中更新凭据`,
+            level: 'info',
+            message: `[${account.id}] 成功同步 WorkBuddy 官方实时积分：${account.points} 积分`,
           },
           updated,
           { successes, fails, skips }
         );
+      } else {
+        const checkRes = await workbuddyRealApi.getResourceSummary(creds, authType, extraHeaders);
+        if (checkRes.status === 401) {
+          fails++;
+          account.status = '异常';
+          onProgress(
+            {
+              id: Math.random().toString(36).substring(2, 9),
+              timestamp: new Date().toLocaleTimeString(),
+              accountId: account.id,
+              level: 'error',
+              message: `[${account.id}] 官方接口返回 401 Unauthorized：Cookie 或 Token 已失效，请双击账号更新凭据`,
+            },
+            updated,
+            { successes, fails, skips }
+          );
+        }
       }
 
-      // 3. Fetch real Cat Travel status & auto depart / claim
+      // 3. Fetch real Cat Travel status & auto depart / claim + real-time API points sync
       if (account.catTravel.autoTravel) {
         onProgress(
           {
@@ -138,63 +155,42 @@ export class AutomationEngine {
           { successes, fails, skips }
         );
 
-        const travelStatusRes = await workbuddyRealApi.getCatTravelStatus(creds, authType);
+        const travelStatusRes = await workbuddyRealApi.getCatTravelStatus(creds, authType, extraHeaders);
         if (travelStatusRes.ok && travelStatusRes.data) {
           const tData = travelStatusRes.data.data || travelStatusRes.data;
-          // check if can claim
           if (tData.can_claim || tData.status === 'completed' || tData.status === 'finished') {
-            onProgress(
-              {
-                id: Math.random().toString(36).substring(2, 9),
-                timestamp: new Date().toLocaleTimeString(),
-                accountId: account.id,
-                level: 'info',
-                message: `[${account.id}] 猫猫旅行已结束，正在领取旅行奖励 (/claim)...`,
-              },
-              updated,
-              { successes, fails, skips }
-            );
-            const claimRes = await workbuddyRealApi.claimCatTravelReward(creds, authType);
+            const claimRes = await workbuddyRealApi.claimCatTravelReward(creds, authType, extraHeaders);
             if (claimRes.ok) {
               successes++;
               account.catTravel.status = '今日已完成';
               account.catTravel.lastResult = '猫猫旅行完成并已领取奖励！';
+              await this.syncLivePointsFromServer(account, creds, authType, extraHeaders);
               onProgress(
                 {
                   id: Math.random().toString(36).substring(2, 9),
                   timestamp: new Date().toLocaleTimeString(),
                   accountId: account.id,
                   level: 'success',
-                  message: `[${account.id}] 成功领取猫猫旅行奖励！`,
+                  message: `[${account.id}] 成功领取猫猫旅行奖励，已调官方服务实时刷新积分：${account.points}`,
                 },
                 updated,
                 { successes, fails, skips }
               );
             }
           } else if (tData.status === 'ready' || tData.status === 'idle' || tData.can_depart) {
-            onProgress(
-              {
-                id: Math.random().toString(36).substring(2, 9),
-                timestamp: new Date().toLocaleTimeString(),
-                accountId: account.id,
-                level: 'info',
-                message: `[${account.id}] 猫猫状态就绪，正在派出猫猫旅行 (/depart)...`,
-              },
-              updated,
-              { successes, fails, skips }
-            );
-            const departRes = await workbuddyRealApi.departCatTravel(1, creds, authType);
+            const departRes = await workbuddyRealApi.departCatTravel(1, creds, authType, extraHeaders);
             if (departRes.ok) {
               successes++;
               account.catTravel.status = '今日已完成';
               account.catTravel.lastResult = '猫猫已成功启程旅行！';
+              await this.syncLivePointsFromServer(account, creds, authType, extraHeaders);
               onProgress(
                 {
                   id: Math.random().toString(36).substring(2, 9),
                   timestamp: new Date().toLocaleTimeString(),
                   accountId: account.id,
                   level: 'success',
-                  message: `[${account.id}] 猫猫已自动出发旅行！`,
+                  message: `[${account.id}] 猫猫已自动出发旅行，当前官方实时积分：${account.points}`,
                 },
                 updated,
                 { successes, fails, skips }
@@ -233,31 +229,13 @@ export class AutomationEngine {
         { successes, fails, skips }
       );
 
-      const tasksRes = await workbuddyRealApi.getGrowthTasks(creds, authType);
+      const tasksRes = await workbuddyRealApi.getGrowthTasks(creds, authType, extraHeaders);
       if (tasksRes.ok && tasksRes.data) {
         const rawTasksList: WorkBuddyRawTask[] =
           tasksRes.data.data?.tasks || tasksRes.data.tasks || tasksRes.data.data || [];
 
         if (Array.isArray(rawTasksList) && rawTasksList.length > 0) {
-          // Map real tasks into account
-          account.tasks = rawTasksList.map((rt) => ({
-            id: rt.task_code,
-            name: rt.title,
-            status:
-              rt.accept_status === 'claimed'
-                ? '已领奖'
-                : rt.accept_status === 'completed'
-                ? '已领奖'
-                : rt.accept_status === 'not_accepted'
-                ? '未完成'
-                : '进行中',
-            currentProgress: rt.current_progress || 0,
-            targetProgress: rt.target_progress || 1,
-            reward: rt.reward_credit || 50,
-            recentResult: rt.accept_status === 'claimed' ? '已领取' : '官方任务同步',
-            reason: rt.description || '官方成长计划任务',
-            autoExecutable: true,
-          }));
+          account.tasks = rawTasksList.map((rt) => mapRawTaskToWorkBuddyTask(rt));
 
           onProgress(
             {
@@ -277,63 +255,92 @@ export class AutomationEngine {
             .map((t) => t.task_code);
 
           if (unacceptedCodes.length > 0) {
+            await workbuddyRealApi.acceptTasks(unacceptedCodes, creds, authType, extraHeaders);
             onProgress(
               {
                 id: Math.random().toString(36).substring(2, 9),
                 timestamp: new Date().toLocaleTimeString(),
                 accountId: account.id,
                 level: 'info',
-                message: `[${account.id}] 正在批量接取未开始任务 (${unacceptedCodes.length} 项)...`,
+                message: `[${account.id}] 已自动接取 ${unacceptedCodes.length} 项未开始任务`,
+              },
+              updated,
+              { successes, fails, skips }
+            );
+          }
+
+          // 6. Execute & claim each un-claimed task one by one, refreshing live points via API after EVERY task
+          const pendingRawTasks = rawTasksList.filter((t) => t.accept_status !== 'claimed');
+
+          for (const pTask of pendingRawTasks) {
+            if (this.isCancelled) break;
+
+            onProgress(
+              {
+                id: Math.random().toString(36).substring(2, 9),
+                timestamp: new Date().toLocaleTimeString(),
+                accountId: account.id,
+                level: 'info',
+                message: `[${account.id}] 正在自动执行任务【${pTask.title}】并尝试领奖...`,
               },
               updated,
               { successes, fails, skips }
             );
 
-            const acceptRes = await workbuddyRealApi.acceptTasks(unacceptedCodes, creds, authType);
-            if (acceptRes.ok) {
-              successes += unacceptedCodes.length;
-              onProgress(
-                {
-                  id: Math.random().toString(36).substring(2, 9),
-                  timestamp: new Date().toLocaleTimeString(),
-                  accountId: account.id,
-                  level: 'success',
-                  message: `[${account.id}] 成功在官方服务端激活接取 ${unacceptedCodes.length} 项任务！`,
-                },
-                updated,
-                { successes, fails, skips }
-              );
+            const execResult = await workbuddyRealApi.executeGrowthTask(
+              pTask,
+              creds,
+              authType,
+              extraHeaders
+            );
+
+            // Real-time API call to update points after EVERY task (Requirement #3)
+            const pointsBefore = account.points;
+            await this.syncLivePointsFromServer(account, creds, authType, extraHeaders);
+            const pointsGained = account.points > pointsBefore;
+
+            const idx = account.tasks.findIndex((t) => t.id === pTask.task_code || t.name === pTask.title);
+            if (idx !== -1) {
+              if (execResult.claimed || pointsGained) {
+                successes++;
+                account.tasks[idx].status = '已领奖';
+                account.tasks[idx].currentProgress = account.tasks[idx].targetProgress;
+                account.tasks[idx].recentResult = `已完成并领奖 (+${account.tasks[idx].reward}分)`;
+                onProgress(
+                  {
+                    id: Math.random().toString(36).substring(2, 9),
+                    timestamp: new Date().toLocaleTimeString(),
+                    accountId: account.id,
+                    level: 'success',
+                    message: `[${account.id}] 任务【${pTask.title}】完成领奖！已调接口实时刷新积分：${account.points}`,
+                  },
+                  updated,
+                  { successes, fails, skips }
+                );
+              } else {
+                account.tasks[idx].recentResult = execResult.detail;
+              }
             }
           }
 
-          // 6. Auto claim any completed tasks (/activity/growth/tasks/{code}/claim)
-          const claimableTasks = rawTasksList.filter(
-            (t) => t.accept_status === 'completed' || (t.current_progress && t.target_progress && t.current_progress >= t.target_progress && t.accept_status !== 'claimed')
-          );
-
-          for (const cTask of claimableTasks) {
-            if (this.isCancelled) break;
-            const claimRes = await workbuddyRealApi.claimTaskReward(cTask.task_code, creds, authType);
-            if (claimRes.ok) {
-              successes++;
-              onProgress(
-                {
-                  id: Math.random().toString(36).substring(2, 9),
-                  timestamp: new Date().toLocaleTimeString(),
-                  accountId: account.id,
-                  level: 'success',
-                  message: `[${account.id}] 成功在官方服务器领取任务【${cTask.title}】的 ${cTask.reward_credit} 积分！`,
-                },
-                updated,
-                { successes, fails, skips }
-              );
+          // Re-fetch official tasks list after batch execution to sync exact server progress
+          const refreshedTasksRes = await workbuddyRealApi.getGrowthTasks(creds, authType, extraHeaders);
+          if (refreshedTasksRes.ok && refreshedTasksRes.data) {
+            const refreshedRaw: WorkBuddyRawTask[] =
+              refreshedTasksRes.data.data?.tasks ||
+              refreshedTasksRes.data.tasks ||
+              refreshedTasksRes.data.data ||
+              [];
+            if (Array.isArray(refreshedRaw) && refreshedRaw.length > 0) {
+              account.tasks = refreshedRaw.map((rt) => mapRawTaskToWorkBuddyTask(rt));
             }
           }
         }
       }
 
-      // 7. Check daily streak / checkin
-      const streakRes = await workbuddyRealApi.getDailyStreak(creds, authType);
+      // 7. Daily check-in / streak + real-time API points sync
+      const streakRes = await workbuddyRealApi.getDailyStreak(creds, authType, extraHeaders);
+      await this.syncLivePointsFromServer(account, creds, authType, extraHeaders);
       if (streakRes.ok && streakRes.data) {
         const sData = streakRes.data.data || streakRes.data;
         onProgress(
@@ -342,26 +349,11 @@ export class AutomationEngine {
             timestamp: new Date().toLocaleTimeString(),
             accountId: account.id,
             level: 'info',
-            message: `[${account.id}] 官方签到/活跃状态更新成功 (连续活跃: ${sData.streak?.days || 1} 天)`,
+            message: `[${account.id}] 官方签到/活跃状态更新成功 (连续活跃: ${sData.streak?.days || 1} 天 · 实时积分: ${account.points})`,
           },
           updated,
           { successes, fails, skips }
         );
-      }
-
-      // 8. Re-fetch final points to reflect claimed credits
-      const finalResourceRes = await workbuddyRealApi.getResourceSummary(creds, authType, extraHeaders);
-      if (finalResourceRes.ok && finalResourceRes.data) {
-        const fData = finalResourceRes.data.data || finalResourceRes.data;
-        const updatedTotal =
-          fData.TotalCredits ??
-          fData.total_credit ??
-          fData.balance ??
-          fData.platform_reward_credit ??
-          fData.available_credits;
-        if (updatedTotal !== undefined) {
-          account.points = Number(updatedTotal);
-        }
       }
 
       account.status = account.status === '异常' ? '异常' : '正常';
@@ -371,7 +363,7 @@ export class AutomationEngine {
     return updated;
   }
 
-  // Quick single cat travel execution
+  // Quick single cat travel execution with real-time API points refresh
   public async runCatTravelOnly(
     accounts: WorkBuddyAccount[],
     onProgress: (log: ExecutionLog, updatedAccounts: WorkBuddyAccount[]) => void
@@ -381,6 +373,7 @@ export class AutomationEngine {
     for (const account of updated) {
       const creds = account.credentials || '';
       const authType = account.authType || 'cookie';
+      const extraHeaders = account.extraHeaders;
 
       onProgress(
         {
@@ -393,10 +386,11 @@ export class AutomationEngine {
         updated
       );
 
-      const statusRes = await workbuddyRealApi.getCatTravelStatus(creds, authType);
+      const statusRes = await workbuddyRealApi.getCatTravelStatus(creds, authType, extraHeaders);
       if (statusRes.ok) {
-        const claimRes = await workbuddyRealApi.claimCatTravelReward(creds, authType);
-        const departRes = await workbuddyRealApi.departCatTravel(1, creds, authType);
+        await workbuddyRealApi.claimCatTravelReward(creds, authType, extraHeaders);
+        await workbuddyRealApi.departCatTravel(1, creds, authType, extraHeaders);
+        await this.syncLivePointsFromServer(account, creds, authType, extraHeaders);
 
         account.catTravel.status = '今日已完成';
         account.catTravel.statusUpdated = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
@@ -407,7 +401,7 @@ export class AutomationEngine {
             timestamp: new Date().toLocaleTimeString(),
             accountId: account.id,
             level: 'success',
-            message: `[${account.id}] 猫猫旅行请求已成功提交至 WorkBuddy 服务端！`,
+            message: `[${account.id}] 猫猫旅行请求已完成，实时同步积分：${account.points}`,
           },
           updated
         );

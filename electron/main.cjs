@@ -123,6 +123,14 @@ ipcMain.handle('workbuddy:proxy', async (_event, { url, method = 'GET', headers 
   }
 });
 
+ipcMain.handle('workbuddy:open-external', async (_event, targetUrl) => {
+  if (typeof targetUrl === 'string' && (targetUrl.startsWith('http://') || targetUrl.startsWith('https://') || targetUrl.startsWith('workbuddy://'))) {
+    await shell.openExternal(targetUrl);
+    return { ok: true };
+  }
+  return { ok: false };
+});
+
 function createWindow() {
   // Remove default ugly "File Edit View Window" menu bar on Windows/Linux
   if (process.platform !== 'darwin') {
@@ -132,14 +140,14 @@ function createWindow() {
   const iconFile = process.platform === 'win32' ? 'icons/icon.ico' : 'icons/icon.png';
 
   const win = new BrowserWindow({
-    width: 1320,
-    height: 860,
-    minWidth: 1024,
-    minHeight: 720,
+    width: 1200,
+    height: 780,
+    minWidth: 1000,
+    minHeight: 660,
     frame: true,
     autoHideMenuBar: true,
     titleBarStyle: 'default',
-    title: 'WorkBuddy 账号日常工具 v1.1.0',
+    title: 'WorkBuddy 账号日常工具 v1.2.0',
     icon: path.join(__dirname, iconFile),
     backgroundColor: '#020617',
     webPreferences: {
