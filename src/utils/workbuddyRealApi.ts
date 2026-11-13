@@ -958,12 +958,33 @@ export class WorkBuddyRealApi {
     acpDetail: string;
     cleanup: () => Promise<void>;
   }> {
+    // WorkBuddy CreateConversation strictly allows only:
+    // agent, template, skill, plugin, scene, expert, locale, smartsheet, smartsheetDoc
+    const ALLOWED_TAG_KEYS = new Set([
+      'agent',
+      'template',
+      'skill',
+      'plugin',
+      'scene',
+      'expert',
+      'locale',
+      'smartsheet',
+      'smartsheetDoc',
+    ]);
+    const sanitizedTags = Array.isArray(payload.tags)
+      ? payload.tags.filter((t: unknown) => {
+          const s = String(t || '').trim();
+          const colonIdx = s.indexOf(':');
+          return colonIdx > 0 && ALLOWED_TAG_KEYS.has(s.slice(0, colonIdx));
+        })
+      : [];
+
     const createBody: Record<string, any> = {
       prompt: String(promptText || '').slice(0, 100),
       model: 'deepseek-r1',
       conversationOrigin: payload.conversationOrigin || 'agents',
       plugins: [{ name: 'weixinpay', marketplace: 'codebuddy-builtin' }],
-      ...(Array.isArray(payload.tags) && payload.tags.length > 0 ? { tags: payload.tags } : {}),
+      ...(sanitizedTags.length > 0 ? { tags: sanitizedTags } : {}),
       ...(payload.expertId ? { expertId: payload.expertId, expert_id: payload.expertId } : {}),
       ...(payload.templateId ? { templateId: payload.templateId, template_id: payload.templateId } : {}),
     };
@@ -972,10 +993,10 @@ export class WorkBuddyRealApi {
       'info',
       `正在调用 POST /console/as/conversations/ 创建云端沙箱会话 (origin=${createBody.conversationOrigin}${
         payload.expertId ? `, expertId=${payload.expertId}` : ''
-      })...`
+      }${sanitizedTags.length > 0 ? `, tags=[${sanitizedTags.join(',')}]` : ''})...`
     );
 
-    const res = await this.request(
+    let res = await this.request(
       '/console/as/conversations/',
       'POST',
       credentials,
@@ -984,8 +1005,31 @@ export class WorkBuddyRealApi {
       desktopHeaders
     ).catch(() => null);
 
-    const convData = res?.data?.data && typeof res.data.data === 'object' ? res.data.data : res?.data;
-    const realId = convData?.id || convData?.conversationId || convData?.conversation_id;
+    let convData = res?.data?.data && typeof res.data.data === 'object' ? res.data.data : res?.data;
+    let realId = convData?.id || convData?.conversationId || convData?.conversation_id;
+
+    // Fallback retry without optional tags/plugins/model if CreateConversation rejected with HTTP 400
+    if (!realId && res?.status === 400) {
+      const firstErr = res?.data?.message || res?.data?.msg || res?.data?.error || 'HTTP 400';
+      onStepLog?.('warn', `建会话首次返回 HTTP 400 (${firstErr})，正在切换精简参数重试...`);
+      const minimalBody: Record<string, any> = {
+        prompt: String(promptText || '').slice(0, 100),
+        conversationOrigin: payload.conversationOrigin === 'desktop' ? 'desktop' : 'agents',
+        ...(payload.expertId ? { expertId: payload.expertId, expert_id: payload.expertId } : {}),
+        ...(payload.templateId ? { templateId: payload.templateId, template_id: payload.templateId } : {}),
+      };
+      res = await this.request(
+        '/console/as/conversations/',
+        'POST',
+        credentials,
+        authType,
+        minimalBody,
+        desktopHeaders
+      ).catch(() => null);
+      convData = res?.data?.data && typeof res.data.data === 'object' ? res.data.data : res?.data;
+      realId = convData?.id || convData?.conversationId || convData?.conversation_id;
+    }
+
     const convId = String(realId || `conv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
     const createStatus = res?.status || 0;
 
@@ -1094,7 +1138,7 @@ export class WorkBuddyRealApi {
     return { convId, hasRealConv: Boolean(realId), createStatus, messageSent, acpDetail, cleanup };
   }
 
-  // Helper: fetch real experts / expert teams from official WorkBuddy CDN manifest & market endpoints
+  // Helper: fetch real experts / expert teams from official WorkBuddy CDN manifest, market endpoints & verified growth IDs
   private async resolveOfficialExperts(
     isTeam: boolean,
     specificExpertName: string | undefined,
@@ -1103,7 +1147,8 @@ export class WorkBuddyRealApi {
     webApiHeaders: Record<string, string>,
     enterpriseId?: string,
     onStepLog?: (level: 'info' | 'warn' | 'error' | 'success', message: string) => void,
-    taskJumpUrl?: string
+    taskJumpUrl?: string,
+    taskCode?: string
   ): Promise<{
     experts: Array<{
       id: string;
@@ -1116,10 +1161,12 @@ export class WorkBuddyRealApi {
       source: string;
       defaultPrompt?: string;
       isTeam: boolean;
+      aliases: string[];
+      fromKeywordSearch?: boolean;
     }>;
     diagnostics: string[];
   }> {
-    const collected: Array<{
+    type ExpertCandidate = {
       id: string;
       name: string;
       displayName: string;
@@ -1130,25 +1177,195 @@ export class WorkBuddyRealApi {
       source: string;
       defaultPrompt?: string;
       isTeam: boolean;
-    }> = [];
+      aliases: string[];
+      fromKeywordSearch?: boolean;
+    };
+
+    const collected: ExpertCandidate[] = [];
     const seenIds = new Set<string>();
     const diagnostics: string[] = [];
 
+    const KNOWN_GROWTH_EXPERTS: Array<{
+      taskCodes: string[];
+      keywords: string[];
+      id: string;
+      name: string;
+      displayName: string;
+      expertTitle: string;
+      defaultPrompt: string;
+    }> = [
+      {
+        taskCodes: ['Expert_lighthouse', 'expert_lighthouse'],
+        keywords: ['腾讯轻量云', '轻量云', 'Lighthouse'],
+        id: 'ex_2cvvUZQhDyeJ',
+        name: '腾讯轻量云专家',
+        displayName: '腾讯轻量云专家',
+        expertTitle: '腾讯轻量云 Lighthouse 专家',
+        defaultPrompt: '查询我的 Lighthouse 实例',
+      },
+      {
+        taskCodes: ['WorkBuddy_Valorant', 'workbuddy_valorant'],
+        keywords: ['无畏契约拼豆', '无畏契约', '拼豆专家'],
+        id: 'ex_xQHHD1u5Jkua',
+        name: '无畏契约拼豆专家',
+        displayName: '无畏契约拼豆专家',
+        expertTitle: '无畏契约拼豆专家',
+        defaultPrompt: '展示1张无畏契约新英雄的拼豆图纸样例',
+      },
+      {
+        taskCodes: ['expert_use_shangjia_xuanchuan'],
+        keywords: ['商家宣传页与海报设计师', '商家宣传设计师', '商家宣传页', '海报设计师'],
+        id: 'ex_Weo3x2EZuSDm',
+        name: '商家宣传页与海报设计师',
+        displayName: '商家宣传页与海报设计师',
+        expertTitle: '商家宣传设计师',
+        defaultPrompt: '店里这周卖了 2000 多单，帮我做一张战报海报发朋友圈',
+      },
+      {
+        taskCodes: [],
+        keywords: ['中国电商运营专家', '中国电商'],
+        id: 'ChinaEcommerceExpert',
+        name: '中国电商运营专家',
+        displayName: '中国电商运营专家',
+        expertTitle: '中国电商运营专家',
+        defaultPrompt: '请帮我制定一份店铺双十一流量与转化提升方案。',
+      },
+      {
+        taskCodes: [],
+        keywords: ['抖音策略师'],
+        id: 'DouyinStrategist',
+        name: '抖音策略师',
+        displayName: '抖音策略师',
+        expertTitle: '抖音策略师',
+        defaultPrompt: '请帮我策划一条高完播率的抖音短视频脚本框架。',
+      },
+      {
+        taskCodes: [],
+        keywords: ['直播电商教练', '直播电商'],
+        id: 'LivestreamEcommerceCoach',
+        name: '直播电商教练',
+        displayName: '直播电商教练',
+        expertTitle: '直播电商教练',
+        defaultPrompt: '请帮我梳理一场高转化直播带货的黄金 3 分钟话术节奏。',
+      },
+    ];
+
     const pickLocalized = (val: any): string => {
       if (!val) return '';
-      if (typeof val === 'string') return val.trim();
+      if (typeof val === 'string') {
+        const trimmed = val.trim();
+        if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+          try {
+            return pickLocalized(JSON.parse(trimmed));
+          } catch {
+            // keep plain string
+          }
+        }
+        return trimmed;
+      }
       if (typeof val === 'object') {
-        return String(val.zh || val.zh_CN || val.en || val.name || '').trim();
+        const direct =
+          val.zh ||
+          val['zh-CN'] ||
+          val.zh_CN ||
+          val['zh-Hans'] ||
+          val.zh_Hans ||
+          val['zh-cn'] ||
+          val.cn ||
+          val.zh_cn ||
+          val.default ||
+          val.name ||
+          val.title ||
+          val.label ||
+          val.text ||
+          val.en ||
+          val['en-US'] ||
+          val.en_US;
+        if (typeof direct === 'string' && direct.trim()) {
+          return direct.trim();
+        }
+        for (const v of Object.values(val)) {
+          if (typeof v === 'string' && v.trim()) {
+            return v.trim();
+          }
+        }
       }
       return '';
     };
 
-    const pushCandidate = (item: any, fallbackSource = 'builtin', forceTeam = false) => {
-      if (!item || typeof item !== 'object') return;
-      const id = String(item.expert_id || item.asset_id || item.team_id || item.id || '').trim();
-      const displayNameZh = pickLocalized(item.displayName || item.display_name);
-      const professionZh = pickLocalized(item.profession || item.title);
-      const rawName = pickLocalized(item.name) || displayNameZh || professionZh || id;
+    const pickAllLocalized = (val: any): string[] => {
+      const out: string[] = [];
+      if (!val) return out;
+      if (typeof val === 'string') {
+        const s = val.trim();
+        if (s.startsWith('{') && s.endsWith('}')) {
+          try {
+            return pickAllLocalized(JSON.parse(s));
+          } catch {
+            // fallback
+          }
+        }
+        if (s) out.push(s);
+        return out;
+      }
+      if (typeof val === 'object') {
+        for (const v of Object.values(val)) {
+          if (typeof v === 'string' && v.trim()) out.push(v.trim());
+        }
+      }
+      return out;
+    };
+
+    const pushCandidate = (
+      rawItem: any,
+      fallbackSource = 'builtin',
+      forceTeam = false,
+      fromKeywordSearch = false
+    ) => {
+      if (!rawItem || typeof rawItem !== 'object') return;
+      // Unwrap nested wrapper objects common in market APIs
+      const nested =
+        (rawItem.expert && typeof rawItem.expert === 'object' && rawItem.expert) ||
+        (rawItem.expert_info && typeof rawItem.expert_info === 'object' && rawItem.expert_info) ||
+        (rawItem.asset && typeof rawItem.asset === 'object' && rawItem.asset) ||
+        (rawItem.info && typeof rawItem.info === 'object' && rawItem.info) ||
+        null;
+      const item = nested ? { ...rawItem, ...nested } : rawItem;
+
+      const id = String(
+        item.expert_id ||
+          item.expertId ||
+          item.asset_id ||
+          item.assetId ||
+          item.team_id ||
+          item.teamId ||
+          item.source_id ||
+          item.sourceId ||
+          item.id ||
+          ''
+      ).trim();
+
+      const aliasCandidates = [
+        ...pickAllLocalized(item.displayName || item.display_name),
+        ...pickAllLocalized(item.expertName || item.expert_name),
+        ...pickAllLocalized(item.expertTitle || item.expert_title),
+        ...pickAllLocalized(item.profession || item.title),
+        ...pickAllLocalized(item.subTitle || item.sub_title),
+        ...pickAllLocalized(item.name),
+        ...pickAllLocalized(item.zhName || item.zh_name || item.cnName || item.cn_name || item.nickname),
+        ...pickAllLocalized(item.description || item.desc),
+      ];
+      const aliases = Array.from(new Set(aliasCandidates.filter(Boolean)));
+
+      const displayNameZh =
+        pickLocalized(item.displayName || item.display_name) ||
+        pickLocalized(item.expertName || item.expert_name) ||
+        pickLocalized(item.zhName || item.zh_name || item.cnName || item.cn_name);
+      const professionZh =
+        pickLocalized(item.profession || item.title) ||
+        pickLocalized(item.expertTitle || item.expert_title) ||
+        pickLocalized(item.subTitle || item.sub_title);
+      const rawName = pickLocalized(item.name) || displayNameZh || professionZh || aliases[0] || id;
       const shownName = displayNameZh || rawName;
       if (!id || !shownName) return;
 
@@ -1162,25 +1379,45 @@ export class WorkBuddyRealApi {
         shownName.includes('团') ||
         professionZh.includes('团');
 
+      const quickList = item.quickPrompts || item.quick_prompts || item.recommendPrompts || item.examples;
+      const firstQuick =
+        Array.isArray(quickList) && quickList[0]
+          ? typeof quickList[0] === 'string'
+            ? quickList[0]
+            : pickLocalized(quickList[0].prompt || quickList[0].text || quickList[0].title || quickList[0])
+          : '';
+
       const defaultPrompt =
-        pickLocalized(item.defaultInitPrompt || item.default_init_prompt) ||
-        (Array.isArray(item.quickPrompts) && item.quickPrompts[0] ? pickLocalized(item.quickPrompts[0]) : '') ||
-        undefined;
+        pickLocalized(item.defaultInitPrompt || item.default_init_prompt) || firstQuick || undefined;
+
+      const candidateObj: ExpertCandidate = {
+        id,
+        name: rawName,
+        displayName: shownName,
+        expertTitle: professionZh || shownName,
+        categoryId: String(item.categoryId || item.category_id || item.industryId || item.industry_id || ''),
+        expertType: itemIsTeam ? 'team' : 'agent',
+        version: String(item.version || item.expert_version || ''),
+        source: String(item.source || fallbackSource),
+        defaultPrompt,
+        isTeam: itemIsTeam,
+        aliases,
+        fromKeywordSearch,
+      };
 
       if (!seenIds.has(id)) {
         seenIds.add(id);
-        collected.push({
-          id,
-          name: rawName,
-          displayName: shownName,
-          expertTitle: professionZh || shownName,
-          categoryId: String(item.categoryId || item.category_id || item.industryId || item.industry_id || ''),
-          expertType: itemIsTeam ? 'team' : 'agent',
-          version: String(item.version || item.expert_version || ''),
-          source: String(item.source || fallbackSource),
-          defaultPrompt,
-          isTeam: itemIsTeam,
-        });
+        collected.push(candidateObj);
+      } else if (fromKeywordSearch) {
+        const existingIdx = collected.findIndex((c) => c.id === id);
+        if (existingIdx >= 0) {
+          collected[existingIdx] = {
+            ...collected[existingIdx],
+            ...candidateObj,
+            aliases: Array.from(new Set([...collected[existingIdx].aliases, ...aliases])),
+            fromKeywordSearch: true,
+          };
+        }
       }
     };
 
@@ -1194,6 +1431,16 @@ export class WorkBuddyRealApi {
           if (Array.isArray(sc?.experts)) {
             sceneExperts.push(...sc.experts);
           }
+          if (Array.isArray(sc?.expertIds)) {
+            for (const exId of sc.expertIds) {
+              const nameMap = sc.expertDisplayNames?.[exId];
+              sceneExperts.push({
+                id: exId,
+                displayName: nameMap || exId,
+                name: nameMap || exId,
+              });
+            }
+          }
         }
         if (sceneExperts.length > 0) return sceneExperts;
       }
@@ -1202,36 +1449,75 @@ export class WorkBuddyRealApi {
         for (const catGroup of Object.values(d.results) as any[]) {
           if (Array.isArray(catGroup?.experts)) {
             merged.push(...catGroup.experts);
+          } else if (Array.isArray(catGroup)) {
+            merged.push(...catGroup);
           }
         }
-        return merged;
+        if (merged.length > 0) return merged;
       }
-      const arr = d.items || d.experts || d.list || d.teams || d.records || [];
+      const arr = d.items || d.experts || d.list || d.teams || d.records || d.rows || d.data || [];
       return Array.isArray(arr) ? arr : [];
     };
 
-    // 0. If task jump_url carries expert_id / expertId / id, resolve directly via get-by-ids
+    // 0A. Check jump_url AND built-in verified Growth Center expert ID mapping FIRST, then hydrate via get-by-ids
     const jumpExpertId = extractIdFromJumpUrl(taskJumpUrl, ['expert_id', 'expertId', 'agent_id', 'id']);
-    if (jumpExpertId) {
+    const knownMatch = KNOWN_GROWTH_EXPERTS.find((entry) => {
+      if (taskCode && entry.taskCodes.some((tc) => tc.toLowerCase() === taskCode.toLowerCase())) {
+        return true;
+      }
+      if (specificExpertName) {
+        const needle = specificExpertName.toLowerCase();
+        return entry.keywords.some((kw) => {
+          const k = kw.toLowerCase();
+          return k === needle || needle.includes(k) || k.includes(needle);
+        });
+      }
+      return false;
+    });
+
+    const directLookupIds = Array.from(
+      new Set([jumpExpertId, knownMatch?.id].filter((v): v is string => Boolean(v && v.trim())))
+    );
+
+    if (directLookupIds.length > 0) {
       const directRes = await this.request(
         '/portal/operation-platform/market/expert/get-by-ids',
         'POST',
         credentials,
         authType,
-        { expert_ids: [jumpExpertId], include_invisible: true },
+        { expert_ids: directLookupIds, include_invisible: true },
         webApiHeaders
       ).catch(() => null);
       const directItems = extractMarketItems(directRes);
       if (directItems.length > 0) {
-        diagnostics.push(`jump_url:${directItems.length}`);
-        directItems.forEach((item) => pushCandidate(item, 'jump_url', isTeam));
-      } else {
-        pushCandidate({ id: jumpExpertId, name: specificExpertName || jumpExpertId }, 'jump_url', isTeam);
-        diagnostics.push(`jump_url:1`);
+        diagnostics.push(`get-by-ids:${directItems.length}`);
+        directItems.forEach((item) => pushCandidate(item, 'market-direct', isTeam, true));
+        onStepLog?.(
+          'info',
+          `通过精准 ID 映射命中官方专家库 (${directLookupIds.join(',')}) -> HTTP ${directRes?.status || 200}, 解析 ${directItems.length} 条`
+        );
+      }
+      if (knownMatch) {
+        pushCandidate(
+          {
+            id: knownMatch.id,
+            name: knownMatch.name,
+            displayName: knownMatch.displayName,
+            profession: knownMatch.expertTitle,
+            defaultInitPrompt: knownMatch.defaultPrompt,
+          },
+          'verified-preset',
+          isTeam,
+          true
+        );
+        diagnostics.push(`preset:${knownMatch.id}`);
+      } else if (jumpExpertId) {
+        pushCandidate({ id: jumpExpertId, name: specificExpertName || jumpExpertId }, 'jump_url', isTeam, true);
+        diagnostics.push(`jump_url:${jumpExpertId}`);
       }
     }
 
-    // Build normalized search keywords so partial/long titles like 「无畏契约拼豆专家」「商家宣传页与海报设计师」「腾讯轻量云」 match reliably
+    // Build normalized search keywords so partial/long titles match reliably in dynamic market search
     const searchKeywords: string[] = [];
     if (specificExpertName) {
       const addKw = (k: string) => {
@@ -1251,7 +1537,7 @@ export class WorkBuddyRealApi {
       `正在检索官方${isTeam ? '专家团' : '专家'}列表${specificExpertName ? `（目标「${specificExpertName}」）` : ''}...`
     );
 
-    // 1. Official Public Market Search/List APIs (with Web headers so APISIX never rejects Cookie with 401)
+    // 1. Official Public Market Search/List APIs
     for (const kw of searchKeywords) {
       const kwBody = {
         page: 1,
@@ -1267,8 +1553,14 @@ export class WorkBuddyRealApi {
         const items = extractMarketItems(res);
         if (items.length > 0) {
           diagnostics.push(`${path}(${kw}):${items.length}`);
-          items.forEach((item) => pushCandidate(item, 'market', isTeam));
-          onStepLog?.('info', `检索 ${path} (keyword=${kw}) -> HTTP ${res?.status}, 获取 ${items.length} 条`);
+          items.forEach((item) => pushCandidate(item, 'market', isTeam, true));
+          const firstSample = items[0] && typeof items[0] === 'object' ? Object.keys(items[0]).slice(0, 8).join(',') : '';
+          onStepLog?.(
+            'info',
+            `检索 ${path} (keyword=${kw}) -> HTTP ${res?.status}, 获取 ${items.length} 条${
+              firstSample ? ` [字段: ${firstSample}]` : ''
+            }`
+          );
           foundForKw = true;
           break;
         } else if (res?.status) {
@@ -1276,21 +1568,12 @@ export class WorkBuddyRealApi {
           onStepLog?.('info', `检索 ${path} (keyword=${kw}) -> HTTP ${res.status}, 返回 0 条`);
         }
       }
-      if (foundForKw && collected.length > 0) {
-        // Check if we already found an exact/partial match for specificExpertName
-        const needle = (specificExpertName || '').toLowerCase();
-        const hit = collected.some(
-          (e) =>
-            e.displayName.toLowerCase().includes(needle) ||
-            e.name.toLowerCase().includes(needle) ||
-            needle.includes(e.displayName.toLowerCase()) ||
-            needle.includes(e.name.toLowerCase())
-        );
-        if (hit) break;
+      if (foundForKw && collected.some((c) => c.fromKeywordSearch)) {
+        break;
       }
     }
 
-    // Always also fetch general recommended page if target wasn't hit yet or running generic 5 experts / 3 teams
+    // Fetch general recommended list for generic 5 experts / 3 teams, or if nothing resolved yet
     if (!specificExpertName || collected.length === 0) {
       const listBody = {
         page: 1,
@@ -1314,7 +1597,7 @@ export class WorkBuddyRealApi {
     }
 
     // 2. Enterprise Market List (when account has enterpriseId)
-    if (enterpriseId) {
+    if (enterpriseId && (!specificExpertName || collected.length === 0)) {
       const q = new URLSearchParams({
         source: 'builtin',
         page: '1',
@@ -1340,69 +1623,84 @@ export class WorkBuddyRealApi {
       }
     }
 
-    // 3. Official Static Marketplace Manifests (built-in, external, internal & featured scenes)
-    const cdnUrls = [
-      'https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/expert-marketplace/expert_center.json',
-      'https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/expert-marketplace/externalExpert.json',
-      'https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/expert-marketplace/internalExpert.json',
-      'https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/expert-marketplace/featuredScenes.json',
-    ];
-    for (const cdnUrl of cdnUrls) {
-      const cdnRes = await this.request(cdnUrl, 'GET', credentials, authType, undefined, {}).catch(() => null);
-      const cdnExperts: any[] = [];
-      if (Array.isArray(cdnRes?.data?.experts)) cdnExperts.push(...cdnRes.data.experts);
-      if (Array.isArray(cdnRes?.data?.scenes)) {
-        for (const sc of cdnRes.data.scenes) {
-          if (Array.isArray(sc?.experts)) cdnExperts.push(...sc.experts);
+    // 3. Official Static Marketplace Manifests + Featured/Ranking (skip heavy bulk pools if specific target is already matched)
+    const alreadyMatchedSpecific =
+      Boolean(specificExpertName) && collected.some((c) => c.fromKeywordSearch);
+
+    if (!alreadyMatchedSpecific) {
+      const cdnUrls = [
+        'https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/expert-marketplace/expert_center.json',
+        'https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/expert-marketplace/externalExpert.json',
+        'https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/expert-marketplace/internalExpert.json',
+        'https://acc-1258344699.cos.accelerate.myqcloud.com/workbuddy/expert-marketplace/featuredScenes.json',
+      ];
+      for (const cdnUrl of cdnUrls) {
+        const cdnRes = await this.request(cdnUrl, 'GET', credentials, authType, undefined, {}).catch(() => null);
+        const cdnExperts: any[] = [];
+        if (Array.isArray(cdnRes?.data?.experts)) cdnExperts.push(...cdnRes.data.experts);
+        if (Array.isArray(cdnRes?.data?.scenes)) {
+          for (const sc of cdnRes.data.scenes) {
+            if (Array.isArray(sc?.experts)) cdnExperts.push(...sc.experts);
+            if (Array.isArray(sc?.expertIds)) {
+              for (const exId of sc.expertIds) {
+                const nameMap = sc.expertDisplayNames?.[exId];
+                cdnExperts.push({
+                  id: exId,
+                  displayName: nameMap || exId,
+                  name: nameMap || exId,
+                });
+              }
+            }
+          }
+        }
+        if (cdnExperts.length > 0) {
+          diagnostics.push(`cdn:${cdnExperts.length}`);
+          cdnExperts.forEach((item) => pushCandidate(item, 'builtin'));
         }
       }
-      if (cdnExperts.length > 0) {
-        diagnostics.push(`cdn:${cdnExperts.length}`);
-        cdnExperts.forEach((item) => pushCandidate(item, 'builtin'));
+
+      // 4. Official Featured, Category Batch & Ranking Endpoints
+      const featuredRes = await this.request(
+        '/api/v2/open-platform/featured',
+        'POST',
+        credentials,
+        authType,
+        {},
+        webApiHeaders
+      ).catch(() => null);
+      const featuredItems = extractMarketItems(featuredRes);
+      if (featuredItems.length > 0) {
+        diagnostics.push(`featured:${featuredItems.length}`);
+        featuredItems.forEach((item) => pushCandidate(item, 'featured'));
       }
-    }
 
-    // 4. Official Featured, Category Batch & Ranking Endpoints
-    const featuredRes = await this.request(
-      '/api/v2/open-platform/featured',
-      'POST',
-      credentials,
-      authType,
-      {},
-      webApiHeaders
-    ).catch(() => null);
-    const featuredItems = extractMarketItems(featuredRes);
-    if (featuredItems.length > 0) {
-      diagnostics.push(`featured:${featuredItems.length}`);
-      featuredItems.forEach((item) => pushCandidate(item, 'featured'));
-    }
+      const rankRes = await this.request(
+        '/portal/expert/ranking?limit=100',
+        'GET',
+        credentials,
+        authType,
+        undefined,
+        webApiHeaders
+      ).catch(() => null);
+      const rankItems = extractMarketItems(rankRes);
+      if (rankItems.length > 0) {
+        diagnostics.push(`portal-ranking:${rankItems.length}`);
+        rankItems.forEach((item) => pushCandidate(item, 'market'));
+      }
 
-    const rankRes = await this.request(
-      '/portal/expert/ranking?limit=100',
-      'GET',
-      credentials,
-      authType,
-      undefined,
-      webApiHeaders
-    ).catch(() => null);
-    const rankItems = extractMarketItems(rankRes);
-    if (rankItems.length > 0) {
-      diagnostics.push(`portal-ranking:${rankItems.length}`);
-      rankItems.forEach((item) => pushCandidate(item, 'market'));
-    }
-
-    const catRes = await this.request(
-      '/api/v2/open-platform/experts',
-      'POST',
-      credentials,
-      authType,
-      { template_id: 1, items: [] },
-      webApiHeaders
-    ).catch(() => null);
-    const catItems = extractMarketItems(catRes);
-    if (catItems.length > 0) {
-      diagnostics.push(`open-platform-experts:${catItems.length}`);
-      catItems.forEach((item) => pushCandidate(item, 'market'));
+      const catRes = await this.request(
+        '/api/v2/open-platform/experts',
+        'POST',
+        credentials,
+        authType,
+        { template_id: 1, items: [] },
+        webApiHeaders
+      ).catch(() => null);
+      const catItems = extractMarketItems(catRes);
+      if (catItems.length > 0) {
+        diagnostics.push(`open-platform-experts:${catItems.length}`);
+        catItems.forEach((item) => pushCandidate(item, 'market'));
+      }
     }
 
     onStepLog?.('info', `专家池汇总完成：共去重收录 ${collected.length} 个候选（来源: ${diagnostics.join(', ') || '无'}）`);
@@ -1545,7 +1843,6 @@ export class WorkBuddyRealApi {
       const turn = await this.executeCloudConversationTurn(
         {
           prompt: inspPrompt,
-          tags: ['playbook', `inspiration:${inspId}`],
         },
         inspPrompt,
         credentials,
@@ -2299,7 +2596,7 @@ export class WorkBuddyRealApi {
       onStepLog?.('info', '步骤3: 正在创建云端会话并发起资料库功能咨询对话...');
       const kbPrompt = '请介绍一下 WorkBuddy 资料库（我的文件与云盘同步）的核心功能和使用方法。';
       const turn = await this.executeCloudConversationTurn(
-        { prompt: kbPrompt, tags: ['knowledge_base', 'my_files'] },
+        { prompt: kbPrompt },
         kbPrompt,
         credentials,
         authType,
@@ -2364,7 +2661,6 @@ export class WorkBuddyRealApi {
           {
             prompt: promptText,
             conversationOrigin: 'desktop',
-            tags: ['daily_chat', title.includes('桌面端') ? 'desktop_chat' : 'ai_chat'],
           },
           promptText,
           credentials,
@@ -2435,7 +2731,8 @@ export class WorkBuddyRealApi {
         desktopHeaders,
         identity.enterpriseId,
         onStepLog,
-        taskJumpUrl
+        taskJumpUrl,
+        taskCode
       );
       const allExperts = resolved.experts;
       const teamPool = allExperts.filter((e) => e.isTeam);
@@ -2448,7 +2745,7 @@ export class WorkBuddyRealApi {
       const normalizeExpertStr = (s: string) =>
         String(s || '')
           .toLowerCase()
-          .replace(/[「」\[\]\s·_\-—:：()（）]/g, '');
+          .replace(/[「」\[\]\s·_\-—:：()（）|]/g, '');
 
       for (let i = 0; i < iterations; i++) {
         let chosen: (typeof allExperts)[number] | undefined;
@@ -2457,28 +2754,35 @@ export class WorkBuddyRealApi {
           const needle = specificExpertName.toLowerCase();
           const normNeedle = normalizeExpertStr(specificExpertName);
           const normShort = normalizeExpertStr(specificExpertName.replace(/(?:专家|设计师|助手|教练)$/g, ''));
+          const matchesText = (txt: string, exact = false) => {
+            const lower = txt.toLowerCase();
+            const norm = normalizeExpertStr(txt);
+            if (!lower) return false;
+            if (exact) return lower === needle || norm === normNeedle;
+            return (
+              lower.includes(needle) ||
+              needle.includes(lower) ||
+              (normShort && (norm.includes(normShort) || normShort.includes(norm)))
+            );
+          };
+
           chosen =
             allExperts.find(
               (e) =>
-                e.displayName.toLowerCase() === needle ||
-                e.name.toLowerCase() === needle ||
-                e.expertTitle.toLowerCase() === needle ||
                 e.id.toLowerCase() === needle ||
-                normalizeExpertStr(e.displayName) === normNeedle ||
-                normalizeExpertStr(e.name) === normNeedle
+                matchesText(e.displayName, true) ||
+                matchesText(e.name, true) ||
+                matchesText(e.expertTitle, true) ||
+                e.aliases.some((a) => matchesText(a, true))
             ) ||
             allExperts.find(
               (e) =>
-                e.displayName.toLowerCase().includes(needle) ||
-                e.name.toLowerCase().includes(needle) ||
-                e.expertTitle.toLowerCase().includes(needle) ||
-                needle.includes(e.displayName.toLowerCase()) ||
-                needle.includes(e.name.toLowerCase()) ||
-                needle.includes(e.expertTitle.toLowerCase()) ||
-                normalizeExpertStr(e.displayName).includes(normShort) ||
-                normalizeExpertStr(e.name).includes(normShort) ||
-                normShort.includes(normalizeExpertStr(e.displayName))
-            );
+                matchesText(e.displayName) ||
+                matchesText(e.name) ||
+                matchesText(e.expertTitle) ||
+                e.aliases.some((a) => matchesText(a))
+            ) ||
+            allExperts.find((e) => e.fromKeywordSearch);
         } else {
           chosen =
             effectivePool.find((e) => !usedExpertIds.has(e.id)) ||
@@ -2486,13 +2790,14 @@ export class WorkBuddyRealApi {
         }
 
         const expertId = chosen?.id || '';
-        const targetName =
+        let targetName =
           chosen?.displayName || chosen?.name || specificExpertName || (isTeam ? `专家团队 ${i + 1}` : `官方专家 ${i + 1}`);
-        const expertTitle = chosen?.expertTitle || targetName;
-        const expertCategory = chosen?.categoryId || '';
-        const expertType = chosen?.expertType || (isTeam ? 'team' : 'agent');
-        const expertVersion = chosen?.version || '';
+        let expertTitle = chosen?.expertTitle || targetName;
+        let expertCategory = chosen?.categoryId || '';
+        let expertType = chosen?.expertType || (isTeam ? 'team' : 'agent');
+        let expertVersion = chosen?.version || '';
         const expertSource = chosen?.source || 'builtin';
+        let resolvedPrompt = chosen?.defaultPrompt;
         if (expertId) {
           usedExpertIds.add(expertId);
         }
@@ -2502,36 +2807,64 @@ export class WorkBuddyRealApi {
           `第 ${i + 1}/${iterations} 轮召唤：目标=「${targetName}」, 命中ID=${expertId || '未命中'}, type=${expertType}, source=${expertSource}`
         );
 
-        // Fetch detail via official get-by-ids endpoint if market expert found
+        // Fetch detail via official get-by-ids endpoint to hydrate version, category, and official quick prompts
         if (expertId) {
           const detailRes = await this.request(
             '/portal/operation-platform/market/expert/get-by-ids',
             'POST',
             credentials,
             authType,
-            { expert_ids: [expertId], include_invisible: false },
+            { expert_ids: [expertId], include_invisible: true },
             desktopHeaders
           ).catch(() => null);
+          const detailPayload = detailRes?.data?.data || detailRes?.data;
+          const detailArr = Array.isArray(detailPayload)
+            ? detailPayload
+            : detailPayload?.experts || detailPayload?.items || detailPayload?.list || [];
+          const dItem = Array.isArray(detailArr) && detailArr[0] ? detailArr[0] : null;
+          if (dItem && typeof dItem === 'object') {
+            const pickStr = (v: any) =>
+              typeof v === 'string'
+                ? v.trim()
+                : v && typeof v === 'object'
+                ? String(v.zh || v['zh-CN'] || v.zh_CN || v.en || v.name || '').trim()
+                : '';
+            const liveDisplay = pickStr(dItem.displayName || dItem.display_name || dItem.expert_name || dItem.name);
+            const liveTitle = pickStr(dItem.profession || dItem.title || dItem.expert_title);
+            if (liveDisplay) targetName = liveDisplay;
+            if (liveTitle) expertTitle = liveTitle;
+            if (dItem.categoryId || dItem.category_id) expertCategory = String(dItem.categoryId || dItem.category_id);
+            if (dItem.version || dItem.expert_version) expertVersion = String(dItem.version || dItem.expert_version);
+            if (!resolvedPrompt) {
+              const qp = dItem.quickPrompts || dItem.quick_prompts;
+              resolvedPrompt =
+                pickStr(dItem.defaultInitPrompt || dItem.default_init_prompt) ||
+                (Array.isArray(qp) && qp[0] ? pickStr(qp[0]?.prompt || qp[0]?.text || qp[0]) : '') ||
+                undefined;
+            }
+          }
           onStepLog?.('info', `拉取专家详情 /market/expert/get-by-ids -> HTTP ${detailRes?.status || 0}`);
         }
 
         if (specificExpertName && (specificExpertName.includes('轻量云') || specificExpertName.includes('连接器'))) {
-          const connRes = await this.request(
-            '/api/v2/open-platform/connectors?page=1&pageSize=20',
-            'GET',
-            credentials,
-            authType,
-            undefined,
-            desktopHeaders
-          ).catch(() => null);
-          onStepLog?.(
-            'info',
-            `检索连接器状态 /open-platform/connectors -> HTTP ${connRes?.status || 0}`
-          );
+          for (const connPath of ['/api/v2/open-platform/connectors?page=1&pageSize=20', '/portal/operation-platform/connectors?page=1&pageSize=20']) {
+            const connRes = await this.request(
+              connPath,
+              'GET',
+              credentials,
+              authType,
+              undefined,
+              desktopHeaders
+            ).catch(() => null);
+            if (connRes?.ok) {
+              onStepLog?.('info', `连接器状态检测 ${connPath} -> HTTP ${connRes.status}`);
+              break;
+            }
+          }
         }
 
         const promptText =
-          chosen?.defaultPrompt ||
+          resolvedPrompt ||
           `你好，请作为「${targetName}」简单介绍一下你的核心能力并给出一个实用示例。`;
 
         const turn = await this.executeCloudConversationTurn(
@@ -2540,7 +2873,7 @@ export class WorkBuddyRealApi {
             ...(expertId ? { expertId, expert_id: expertId } : {}),
             expertName: targetName,
             expertType,
-            tags: expertId ? [`expert:${expertId}`, `expert_name:${targetName}`] : [`expert_name:${targetName}`],
+            tags: expertId ? [`expert:${expertId}`] : [],
           },
           promptText,
           credentials,
@@ -2685,12 +3018,17 @@ export class WorkBuddyRealApi {
     }
 
     // Give official server enough time to settle sandbox ACP message & async task counters before checking & cleaning up
-    onStepLog?.('info', '操作执行完毕，等待 1.5s 让服务端异步结算任务计数，随后尝试自动领奖...');
-    await new Promise((r) => setTimeout(r, 1500));
+    onStepLog?.('info', '操作执行完毕，等待 2s 让服务端异步结算任务计数，随后尝试自动领奖...');
+    await new Promise((r) => setTimeout(r, 2000));
 
     // Step 3: Attempt to claim reward right away
     let claimRes = await this.claimTaskReward(taskCode, credentials, authType, extraHeaders, onStepLog);
     let claimed = claimRes.ok;
+
+    if (!claimed && anyTriggerOk) {
+      onStepLog?.('info', '首次领奖未结算完成，额外等待 2s 让云端队列同步任务进度...');
+      await new Promise((r) => setTimeout(r, 2000));
+    }
 
     // Step 4: Re-fetch /v2/activity/growth/tasks to verify real server-side progress and status
     onStepLog?.('info', '正在回查 /v2/activity/growth/tasks 核验服务端最新进度与领奖状态...');
