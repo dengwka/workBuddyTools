@@ -302,7 +302,20 @@ export class AutomationEngine {
               pTask,
               creds,
               authType,
-              extraHeaders
+              extraHeaders,
+              (level, msg) => {
+                onProgress(
+                  {
+                    id: Math.random().toString(36).substring(2, 9),
+                    timestamp: new Date().toLocaleTimeString(),
+                    accountId: account.id,
+                    level,
+                    message: `[${account.id}] [${pTask.title}] ${msg}`,
+                  },
+                  updated,
+                  { successes, fails, skips }
+                );
+              }
             );
 
             // Real-time API call to update points after EVERY task

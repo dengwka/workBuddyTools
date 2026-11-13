@@ -157,10 +157,17 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     release,
     isChecking: isCheckingVersion,
     hasUpdate,
+    hasChecked: hasCheckedVersion,
+    checkError: checkVersionError,
     systemEnv,
     setSystemEnv,
     checkLatestVersion,
   } = useVersionUpdater(CURRENT_APP_VERSION);
+
+  const handleOpenVersionModal = () => {
+    setIsVersionModalOpen(true);
+    checkLatestVersion();
+  };
 
   // Sync to localStorage
   useEffect(() => {
@@ -197,7 +204,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
       level,
       message,
     };
-    setLogs((prev) => [newLog, ...prev.slice(0, 120)]);
+    setLogs((prev) => [newLog, ...prev.slice(0, 300)]);
   };
 
   // Fetch real-time live points directly from official service (NEVER local arithmetic)
@@ -457,7 +464,8 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
       task,
       currentAccount.credentials,
       currentAccount.authType,
-      currentAccount.extraHeaders
+      currentAccount.extraHeaders,
+      (level, msg) => addLog(level, currentAccount.id, `[${currentAccount.id}] [${task.name}] ${msg}`)
     );
 
     // Always call official API to update live points & task status after execution
@@ -517,7 +525,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
       const updated = await automationEngine.runDailyTasks(
         targetAccounts,
         (logItem, currentProgressAccounts, delta) => {
-          setLogs((prev) => [logItem, ...prev.slice(0, 120)]);
+          setLogs((prev) => [logItem, ...prev.slice(0, 300)]);
           setStats((prev) => ({
             ...prev,
             roundSuccess: delta.successes,
@@ -641,11 +649,13 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
 
       for (const t of orderedTasks) {
         const ptsBefore = acc.points;
+        addLog('info', acc.id, `[${acc.id}] 开始处理任务「${t.name}」...`);
         const execRes = await workbuddyRealApi.executeGrowthTask(
           t,
           acc.credentials,
           acc.authType,
-          acc.extraHeaders
+          acc.extraHeaders,
+          (level, msg) => addLog(level, acc.id, `[${acc.id}] [${t.name}] ${msg}`)
         );
         // Real-time official API points update after EVERY task!
         const livePts = await handleFetchLivePoints(acc, false);
@@ -682,7 +692,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
       const updated = await automationEngine.runCatTravelOnly(
         targetAccounts,
         (logItem, currentProgressAccounts) => {
-          setLogs((prev) => [logItem, ...prev.slice(0, 120)]);
+          setLogs((prev) => [logItem, ...prev.slice(0, 300)]);
           setAccounts((prev) =>
             prev.map((acc) => {
               const found = currentProgressAccounts.find((p) => p.id === acc.id);
@@ -749,8 +759,8 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
             {/* Version Badge & Red Dot Update Trigger */}
             <button
               type="button"
-              onClick={() => setIsVersionModalOpen(true)}
-              title="点击查看版本升级管理与下载对应系统安装包"
+              onClick={handleOpenVersionModal}
+              title="点击自动检测版本更新并查看版本管理"
               className="relative inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-[11px] font-mono text-slate-300 transition-colors cursor-pointer"
             >
               <span>v{localVersion}</span>
@@ -771,7 +781,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setIsVersionModalOpen(true)}
+            onClick={handleOpenVersionModal}
             className="relative px-2.5 py-1 bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer"
           >
             <ArrowUpCircle className="w-3.5 h-3.5 text-emerald-400" />
@@ -1435,6 +1445,8 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
         localVersion={localVersion}
         release={release}
         hasUpdate={hasUpdate}
+        hasChecked={hasCheckedVersion}
+        checkError={checkVersionError}
         isChecking={isCheckingVersion}
         systemEnv={systemEnv}
         onCheckUpdate={checkLatestVersion}

@@ -13,7 +13,7 @@ import {
   Zap,
 } from 'lucide-react';
 
-export const CURRENT_APP_VERSION = '1.3.0';
+export const CURRENT_APP_VERSION = '1.3.1';
 export const GITHUB_REPO = 'dengwka/workBuddyTools';
 
 export interface GitHubReleaseAsset {
@@ -236,6 +236,8 @@ export function useVersionUpdater(localVersion: string = CURRENT_APP_VERSION) {
   const [release, setRelease] = useState<GitHubReleaseInfo | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   const [hasUpdate, setHasUpdate] = useState(false);
+  const [hasChecked, setHasChecked] = useState(false);
+  const [checkError, setCheckError] = useState<string | null>(null);
   const [systemEnv, setSystemEnv] = useState<DetectedSystemEnv>({
     envType: 'win-x64',
     label: 'Windows 64位系统 (x64)',
@@ -249,6 +251,7 @@ export function useVersionUpdater(localVersion: string = CURRENT_APP_VERSION) {
 
   const checkLatestVersion = useCallback(async () => {
     setIsChecking(true);
+    setCheckError(null);
     try {
       const winAny = window as unknown as {
         electronAPI?: {
@@ -281,10 +284,13 @@ export function useVersionUpdater(localVersion: string = CURRENT_APP_VERSION) {
         setRelease(data);
         const isNewer = compareSemver(data.tag_name, localVersion) > 0;
         setHasUpdate(isNewer);
+        setHasChecked(true);
         setLastCheckedAt(new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }));
+      } else {
+        setCheckError('未能获取到 GitHub Release 版本信息，请检查网络或代理状态');
       }
-    } catch {
-      // ignore offline error
+    } catch (err: unknown) {
+      setCheckError(err instanceof Error ? err.message : '版本检测请求异常');
     } finally {
       setIsChecking(false);
     }
@@ -299,6 +305,8 @@ export function useVersionUpdater(localVersion: string = CURRENT_APP_VERSION) {
     release,
     isChecking,
     hasUpdate,
+    hasChecked,
+    checkError,
     setHasUpdate,
     systemEnv,
     setSystemEnv,
@@ -313,6 +321,8 @@ interface VersionUpdateModalProps {
   localVersion: string;
   release: GitHubReleaseInfo | null;
   hasUpdate: boolean;
+  hasChecked?: boolean;
+  checkError?: string | null;
   isChecking: boolean;
   systemEnv: DetectedSystemEnv;
   onCheckUpdate: () => void;
@@ -343,6 +353,8 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
   localVersion,
   release,
   hasUpdate,
+  hasChecked = true,
+  checkError = null,
   isChecking,
   systemEnv,
   onCheckUpdate,
@@ -548,7 +560,12 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="font-semibold text-slate-100 text-sm">版本升级管理</h3>
-                {hasUpdate ? (
+                {isChecking ? (
+                  <span className="px-2 py-0.5 text-[10px] font-medium bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 rounded-full flex items-center gap-1">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    正在检测更新...
+                  </span>
+                ) : hasUpdate ? (
                   <span className="px-2 py-0.5 text-[10px] font-medium bg-rose-500/15 text-rose-300 border border-rose-500/30 rounded-full flex items-center gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping" />
                     发现新版本 {remoteTag}
@@ -587,15 +604,15 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
               <div>
                 <div className="text-[11px] text-slate-400">GitHub 最新版本</div>
                 <div className="text-sm font-bold font-mono text-emerald-400 mt-0.5 flex items-center gap-1.5">
-                  <span>{remoteTag}</span>
+                  <span>{isChecking && !release ? '检测中...' : remoteTag}</span>
                   {hasUpdate && <span className="w-2 h-2 rounded-full bg-rose-500" />}
                 </div>
               </div>
               <button
                 type="button"
                 onClick={onCheckUpdate}
-                disabled={isChecking}
-                title="立即检查 GitHub 最新版本"
+                disabled={isChecking || isDownloading}
+                title="重新检测 GitHub 最新版本"
                 className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition-colors cursor-pointer disabled:opacity-50"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isChecking ? 'animate-spin text-emerald-400' : ''}`} />
@@ -603,158 +620,197 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
             </div>
           </div>
 
-          {/* Detected OS & Architecture Box */}
-          <div className="p-3 bg-emerald-950/20 border border-emerald-500/30 rounded-xl space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-emerald-300 font-medium">
-                <Cpu className="w-4 h-4 text-emerald-400" />
-                <span>已自动识别系统环境：{systemEnv.label}</span>
+          {/* Checking State when no update detected yet */}
+          {isChecking && !hasUpdate && !isDownloading ? (
+            <div className="p-5 bg-slate-950/90 border border-slate-800 rounded-xl flex flex-col items-center justify-center text-center space-y-2.5">
+              <Loader2 className="w-6 h-6 animate-spin text-emerald-400" />
+              <div className="text-sm font-medium text-slate-200">正在自动检测最新版本...</div>
+              <p className="text-[11px] text-slate-400">
+                正在比对本地版本 <span className="font-mono text-slate-300">v{localVersion}</span> 与 GitHub Releases 最新正式版
+              </p>
+            </div>
+          ) : checkError && !hasUpdate && !isDownloading ? (
+            <div className="p-4 bg-rose-950/20 border border-rose-500/30 rounded-xl space-y-3">
+              <div className="text-xs text-rose-300 leading-relaxed">
+                自动检测版本失败：{checkError}
               </div>
-              <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-            </div>
-
-            <div className="flex items-center justify-between gap-2 pt-0.5">
-              <div className="flex items-center gap-1.5">
-                <span className="text-[11px] text-slate-400">目标环境:</span>
-                {ENV_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.envType}
-                    type="button"
-                    onClick={() => onChangeEnv(opt)}
-                    className={`px-2 py-0.5 rounded text-[11px] font-mono transition-colors cursor-pointer ${
-                      systemEnv.envType === opt.envType
-                        ? 'bg-emerald-600 text-white font-semibold'
-                        : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 border border-slate-700/70'
-                    }`}
-                  >
-                    {opt.shortLabel}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Mirror Acceleration Node Selector (from kuaixuntong) */}
-          <div className="flex items-center justify-between px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl">
-            <span className="text-slate-300 flex items-center gap-1.5 text-[11px]">
-              <Zap className="w-3.5 h-3.5 text-amber-400" />
-              <span>下载加速源:</span>
-            </span>
-            <select
-              value={mirrorMode}
-              onChange={(e) => setMirrorMode(e.target.value as any)}
-              className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500 cursor-pointer"
-            >
-              <option value="auto">⚡ 智能多源自动切换 (推荐)</option>
-              <option value="ghfast">⚡ GHFast 国内高速镜像</option>
-              <option value="ghproxy">🚀 GH-Proxy 备用镜像</option>
-              <option value="official">🌐 GitHub 官方源 (直连)</option>
-            </select>
-          </div>
-
-          {/* GitHub Release Notes */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between text-slate-300 font-medium">
-              <span className="flex items-center gap-1.5">
-                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span>GitHub 版本升级文案 ({remoteTag})</span>
-              </span>
-              {release?.published_at && (
-                <span className="text-[11px] text-slate-500 font-mono">
-                  发布于 {new Date(release.published_at).toLocaleString('zh-CN')}
-                </span>
-              )}
-            </div>
-            <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl text-slate-300 font-mono text-[11px] leading-relaxed whitespace-pre-wrap max-h-36 overflow-y-auto select-text">
-              {defaultReleaseNotes}
-            </div>
-          </div>
-
-          {/* Status Message */}
-          {statusMessage && (
-            <div
-              className={`p-2.5 rounded-xl border flex items-center gap-2 ${
-                statusMessage.ok
-                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-                  : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
-              }`}
-            >
-              <CheckCircle2
-                className={`w-4 h-4 shrink-0 ${statusMessage.ok ? 'text-emerald-400' : 'text-rose-400'}`}
-              />
-              <span className="text-[11px] leading-relaxed">{statusMessage.text}</span>
-            </div>
-          )}
-
-          {/* Primary Download & Install Button */}
-          <div className="space-y-2.5 pt-1">
-            <button
-              type="button"
-              onClick={handleSmartDownload}
-              disabled={isDownloading || isChecking}
-              className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-xl shadow-lg flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-50"
-            >
-              {isDownloading ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Download className="w-4 h-4" />
-              )}
-              <span>
-                {isDownloading
-                  ? progress?.stage === 'installing'
-                    ? '下载完成，正在自动触发安装...'
-                    : '正在应用内自动下载安装包...'
-                  : !matched.hasAsset
-                  ? isChecking
-                    ? '正在获取安装包信息...'
-                    : '重新获取对应环境安装包'
-                  : `${hasUpdate ? '立即更新并自动下载安装' : '下载并自动安装当前环境包'} (${matched.primaryName}${
-                      matched.primarySizeMb ? ` · ${matched.primarySizeMb}` : ''
-                    })`}
-              </span>
-            </button>
-
-            {/* In-App Download & Auto-Install Progress Bar (Displayed right below update button!) */}
-            {progress && (isDownloading || progress.stage === 'done' || progress.stage === 'installing') && (
-              <div className="p-3 bg-slate-950 border border-emerald-500/30 rounded-xl space-y-2">
-                <div className="flex items-center justify-between text-[11px] font-mono gap-2">
-                  <span className="text-emerald-400 truncate">
-                    {progress.stage === 'installing'
-                      ? '⚡ 正在自动启动安装程序...'
-                      : progress.stage === 'done'
-                      ? '✅ 已完成下载并触发安装'
-                      : progress.nodeName}
-                  </span>
-                  <span className="text-slate-300 shrink-0">
-                    {progress.percent}% ({progress.receivedMb}/{progress.totalMb} MB) · {progress.speedText}{' '}
-                    {progress.remainingText}
-                  </span>
-                </div>
-                <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-emerald-500 transition-all duration-200"
-                    style={{ width: `${Math.max(2, progress.percent)}%` }}
-                  />
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-center justify-between px-1 text-[11px] text-slate-400">
-              <span className="text-slate-500">
-                {matched.hasAsset ? `目标文件：${matched.primaryName}` : '等待获取 GitHub Release 真实资产列表'}
-              </span>
-
               <button
                 type="button"
                 onClick={onCheckUpdate}
-                disabled={isChecking || isDownloading}
-                className="text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                disabled={isChecking}
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg border border-slate-700 inline-flex items-center gap-1.5 text-[11px] cursor-pointer"
               >
-                <RefreshCw className={`w-3 h-3 ${isChecking ? 'animate-spin' : ''}`} />
-                <span>刷新版本与资产</span>
+                <RefreshCw className="w-3 h-3" />
+                <span>重新检测</span>
               </button>
             </div>
-          </div>
+          ) : !hasUpdate && hasChecked && !isDownloading && progress?.stage !== 'done' ? (
+            <div className="p-5 bg-emerald-950/20 border border-emerald-500/30 rounded-xl flex flex-col items-center justify-center text-center space-y-2">
+              <div className="w-10 h-10 rounded-full bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center">
+                <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+              </div>
+              <div className="text-sm font-semibold text-emerald-300">当前已是最新版本</div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                本地当前版本 <span className="font-mono text-emerald-300">v{localVersion}</span> 已与 GitHub 最新版本{' '}
+                <span className="font-mono text-emerald-300">{remoteTag}</span> 一致，无需更新。
+              </p>
+            </div>
+          ) : (
+            <>
+              {/* Detected OS & Architecture Box */}
+              <div className="p-3 bg-emerald-950/20 border border-emerald-500/30 rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-emerald-300 font-medium">
+                    <Cpu className="w-4 h-4 text-emerald-400" />
+                    <span>已自动识别系统环境：{systemEnv.label}</span>
+                  </div>
+                  <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                </div>
+
+                <div className="flex items-center justify-between gap-2 pt-0.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-slate-400">目标环境:</span>
+                    {ENV_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.envType}
+                        type="button"
+                        onClick={() => onChangeEnv(opt)}
+                        className={`px-2 py-0.5 rounded text-[11px] font-mono transition-colors cursor-pointer ${
+                          systemEnv.envType === opt.envType
+                            ? 'bg-emerald-600 text-white font-semibold'
+                            : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 border border-slate-700/70'
+                        }`}
+                      >
+                        {opt.shortLabel}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Mirror Acceleration Node Selector (from kuaixuntong) */}
+              <div className="flex items-center justify-between px-3 py-2 bg-slate-950 border border-slate-800 rounded-xl">
+                <span className="text-slate-300 flex items-center gap-1.5 text-[11px]">
+                  <Zap className="w-3.5 h-3.5 text-amber-400" />
+                  <span>下载加速源:</span>
+                </span>
+                <select
+                  value={mirrorMode}
+                  onChange={(e) => setMirrorMode(e.target.value as any)}
+                  className="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500 cursor-pointer"
+                >
+                  <option value="auto">⚡ 智能多源自动切换 (推荐)</option>
+                  <option value="ghfast">⚡ GHFast 国内高速镜像</option>
+                  <option value="ghproxy">🚀 GH-Proxy 备用镜像</option>
+                  <option value="official">🌐 GitHub 官方源 (直连)</option>
+                </select>
+              </div>
+
+              {/* GitHub Release Notes */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-slate-300 font-medium">
+                  <span className="flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                    <span>GitHub 版本升级文案 ({remoteTag})</span>
+                  </span>
+                  {release?.published_at && (
+                    <span className="text-[11px] text-slate-500 font-mono">
+                      发布于 {new Date(release.published_at).toLocaleString('zh-CN')}
+                    </span>
+                  )}
+                </div>
+                <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl text-slate-300 font-mono text-[11px] leading-relaxed whitespace-pre-wrap max-h-36 overflow-y-auto select-text">
+                  {defaultReleaseNotes}
+                </div>
+              </div>
+
+              {/* Status Message */}
+              {statusMessage && (
+                <div
+                  className={`p-2.5 rounded-xl border flex items-center gap-2 ${
+                    statusMessage.ok
+                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                      : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                  }`}
+                >
+                  <CheckCircle2
+                    className={`w-4 h-4 shrink-0 ${statusMessage.ok ? 'text-emerald-400' : 'text-rose-400'}`}
+                  />
+                  <span className="text-[11px] leading-relaxed">{statusMessage.text}</span>
+                </div>
+              )}
+
+              {/* Primary Download & Install Button */}
+              <div className="space-y-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={handleSmartDownload}
+                  disabled={isDownloading || isChecking}
+                  className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-xl shadow-lg flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {isDownloading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Download className="w-4 h-4" />
+                  )}
+                  <span>
+                    {isDownloading
+                      ? progress?.stage === 'installing'
+                        ? '下载完成，正在自动触发安装...'
+                        : '正在应用内自动下载安装包...'
+                      : !matched.hasAsset
+                      ? isChecking
+                        ? '正在获取安装包信息...'
+                        : '重新获取对应环境安装包'
+                      : `立即更新并自动下载安装 (${matched.primaryName}${
+                          matched.primarySizeMb ? ` · ${matched.primarySizeMb}` : ''
+                        })`}
+                  </span>
+                </button>
+
+                {/* In-App Download & Auto-Install Progress Bar (Displayed right below update button!) */}
+                {progress && (isDownloading || progress.stage === 'done' || progress.stage === 'installing') && (
+                  <div className="p-3 bg-slate-950 border border-emerald-500/30 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between text-[11px] font-mono gap-2">
+                      <span className="text-emerald-400 truncate">
+                        {progress.stage === 'installing'
+                          ? '⚡ 正在自动启动安装程序...'
+                          : progress.stage === 'done'
+                          ? '✅ 已完成下载并触发安装'
+                          : progress.nodeName}
+                      </span>
+                      <span className="text-slate-300 shrink-0">
+                        {progress.percent}% ({progress.receivedMb}/{progress.totalMb} MB) · {progress.speedText}{' '}
+                        {progress.remainingText}
+                      </span>
+                    </div>
+                    <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-emerald-500 transition-all duration-200"
+                        style={{ width: `${Math.max(2, progress.percent)}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between px-1 text-[11px] text-slate-400">
+                  <span className="text-slate-500">
+                    {matched.hasAsset ? `目标文件：${matched.primaryName}` : '等待获取 GitHub Release 真实资产列表'}
+                  </span>
+
+                  <button
+                    type="button"
+                    onClick={onCheckUpdate}
+                    disabled={isChecking || isDownloading}
+                    className="text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isChecking ? 'animate-spin' : ''}`} />
+                    <span>刷新版本与资产</span>
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>

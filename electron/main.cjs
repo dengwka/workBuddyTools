@@ -96,7 +96,7 @@ async function fetchLatestReleaseInfo() {
     const apiRes = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
       headers: {
         Accept: 'application/vnd.github+json',
-        'User-Agent': 'WorkBuddyTools-Updater/1.3.0',
+        'User-Agent': 'WorkBuddyTools-Updater/1.3.1',
       },
       signal: AbortSignal.timeout(10000),
     });
@@ -120,7 +120,7 @@ async function fetchLatestReleaseInfo() {
     try {
       const res = await fetch(pageUrl, {
         redirect: 'follow',
-        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.0' },
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.1' },
         signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) continue;
@@ -138,7 +138,7 @@ async function fetchLatestReleaseInfo() {
         : `https://github.com/${GITHUB_REPO}/releases/expanded_assets/${tagName}`;
 
       const expRes = await fetch(expandedUrl, {
-        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.0' },
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.1' },
         signal: AbortSignal.timeout(10000),
       });
       const expHtml = expRes.ok ? await expRes.text() : html;
@@ -190,7 +190,7 @@ async function executeStreamDownload(targetUrl, originalFileName, nodeName, emit
   try {
     res = await fetch(targetUrl, {
       redirect: 'follow',
-      headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.0' },
+      headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.1' },
       signal: controller.signal,
     });
   } finally {
@@ -753,7 +753,7 @@ function createWindow() {
     frame: true,
     autoHideMenuBar: true,
     titleBarStyle: 'default',
-    title: 'WorkBuddy 自动化工具 v1.3.0',
+    title: 'WorkBuddy 自动化工具 v1.3.1',
     icon: path.join(__dirname, iconFile),
     backgroundColor: '#020617',
     webPreferences: {

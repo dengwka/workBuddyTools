@@ -1,7 +1,7 @@
 # WorkBuddy 自动化工具 (workbuddyTools)
 
 <p align="center">
-  <img src="public/assets/workbuddy_preview_v100.svg" alt="WorkBuddy 自动化工具 v1.3.0" width="860" style="border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.5);" />
+  <img src="public/assets/workbuddy_preview_v100.svg" alt="WorkBuddy 自动化工具 v1.3.1" width="860" style="border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.5);" />
 </p>
 
 <p align="center">
@@ -64,10 +64,10 @@
 
 ### 方式一：直接下载全平台桌面客户端（推荐）
 
-前往项目的 [Releases 发布页面](https://github.com/dengwka/workBuddyTools/releases) 下载最新版本 (`v1.3.0`) 的打包产物（已支持 3 大平台架构）：
-- 🪟 **Windows (x64)**: `workbuddyTools-Setup-1.3.0.exe`（NSIS 安装包）
-- 🍎 **macOS Intel 芯片 (x64)**: `workbuddyTools-1.3.0-x64.dmg`
-- 🍏 **macOS Apple Silicon M1/M2/M3/M4 (arm64)**: `workbuddyTools-1.3.0-arm64.dmg`
+前往项目的 [Releases 发布页面](https://github.com/dengwka/workBuddyTools/releases) 下载最新版本 (`v1.3.1`) 的打包产物（已支持 3 大平台架构）：
+- 🪟 **Windows (x64)**: `workbuddyTools-Setup-1.3.1.exe`（NSIS 安装包）
+- 🍎 **macOS Intel 芯片 (x64)**: `workbuddyTools-1.3.1-x64.dmg`
+- 🍏 **macOS Apple Silicon M1/M2/M3/M4 (arm64)**: `workbuddyTools-1.3.1-arm64.dmg`
 
 ### 方式二：本地源码启动（Web 模式）
 

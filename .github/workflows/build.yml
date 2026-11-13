@@ -9,7 +9,7 @@ on:
       version:
         description: 'Release Version'
         required: false
-        default: 'v1.3.0'
+        default: 'v1.3.1'
 
 permissions:
   contents: write
@@ -83,7 +83,7 @@ jobs:
             release/*.zip
 
   publish-release:
-    name: Publish GitHub Release (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.0' }})
+    name: Publish GitHub Release (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.1' }})
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
@@ -110,8 +110,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.0' }}
-          name: WorkBuddy 自动化工具 ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.0' }} 正式发布
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.1' }}
+          name: WorkBuddy 自动化工具 ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.1' }} 正式发布
           files: |
             dist-release/*.exe
             dist-release/*.dmg
@@ -119,22 +119,18 @@ jobs:
           draft: false
           prerelease: false
           body: |
-            ### 🌟 WorkBuddy 自动化工具 ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.0' }} 正式发布
+            ### 🌟 WorkBuddy 自动化工具 ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.1' }} 正式发布
 
-            本版本正式更名为 **WorkBuddy 自动化工具**，全面升级成长中心自动领奖、专家与对话任务真实执行链路，并重磅推出应用内流式下载与自动安装升级器：
+            本版本为 **WorkBuddy 自动化工具 v1.3.1**，重点完成云端沙箱 ACP 真实对话链路打通、版本升级弹窗交互精简，以及全链路细粒度任务日志：
 
-            #### 🚀 核心升级内容 (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.0' }})
-            1. **品牌升级为「WorkBuddy 自动化工具」**：
-               - 统一客户端窗口标题、桌面快捷方式、Electron 安装包及 GitHub Releases 发布标题格式为 `WorkBuddy 自动化工具 vxxx 正式发布`。
-            2. **已完成任务自动识别与自动领奖闭环**：
-               - 自动识别官方成长中心进度已满的 `待领奖` 任务，一键全自动运行优先触发领奖并支持列表内「立即领奖」；
-               - 补全成长中心 Web 请求标头与 Cookie 身份提取，兼容多种官方 `/claim`、`/receive` 领奖接口及埋点上报，失败时输出清晰诊断日志。
-            3. **召回专家 / 专家团 / 对话 / 技能任务真实链路修复**：
-               - 接入官方专家搜索、专家团队与排行榜真实接口，移除占位 ID，使用真实官方专家/团队 ID 发起召回；
-               - 云端对话升级为「创建会话 + 发送真实消息对话 + 进度核验后延迟清理」，彻底解决原建完即删导致 `0/1`、`0/3`、`0/5` 无法完成的问题；
-               - 拆分并完善「尝鲜热门技能」「体验『资料库』」「和 AI 聊天 5 次」「领取一只 Buddy」等任务执行机制与助手引导。
-            4. **应用内流式下载与自动安装升级器（彻底解决 404 浏览器跳转）**：
-               - 实时拉取 GitHub Releases 真实平台资产列表，点击更新后直接在应用内通过多节点镜像（`GHFast` / `GH-Proxy` / GitHub 直连）流式下载，全程不再跳转打开外部浏览器；
-               - 更新按钮下方实时显示下载百分比、体积、速率、剩余时间与阶段状态，完整性校验通过后自动拉起 `.exe` / `.dmg` 系统安装程序。
+            #### 🚀 核心升级内容 (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.1' }})
+            1. **真实云端沙箱 ACP 对话与专家检索闭环**：
+               - 接入官方市场专家/团队检索接口（`/portal/operation-platform/market/expert/list`、`/api/v2/open-platform/experts`）与 CDN 静态清单，精准匹配专家 `id`、`displayName` 与初始提示词；
+               - 云端对话升级为真实 StreamableHTTP ACP 协议（`/acp/bootstrap` 建立 SSE 并获取 `Acp-Connection-Id`，再通过 `session/prompt` 发送真实对话消息），完整对齐 `/v2/report` 官方埋点字段。
+            2. **版本升级弹窗自动检测与界面精简**：
+               - 点击主页「版本升级」或版本号即可自动触发最新版本检测，无需进入弹窗后手动点击；
+               - 当检测为最新版本时，隐藏多余环境选择/加速源/安装包下载区域，直接清晰展示「当前已是最新版本」；发现新版本时支持应用内流式下载与自动启动安装（免浏览器跳转）。
+            3. **任务执行全链路细粒度日志**：
+               - 实时打印每一步具体执行动作与接口返回（账号身份解析、专家检索命中源与 ID、建会话状态、ACP 沙箱连接与响应、usage/埋点上报状态、1.5s 结算核验与领奖结果），方便随时截图排查问题。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

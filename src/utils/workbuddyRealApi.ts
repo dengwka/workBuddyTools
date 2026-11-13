@@ -643,7 +643,8 @@ export class WorkBuddyRealApi {
     taskCode: string,
     credentials: string,
     authType: 'cookie' | 'token',
-    extraHeaders?: Record<string, string>
+    extraHeaders?: Record<string, string>,
+    onStepLog?: (level: 'info' | 'warn' | 'error' | 'success', message: string) => void
   ): Promise<{ ok: boolean; status: number; data: any; message: string; endpoint?: string }> {
     const encodedCode = encodeURIComponent(taskCode);
     const growthWebHeaders: Record<string, string> = {
@@ -675,13 +676,18 @@ export class WorkBuddyRealApi {
       ).catch(() => ({ ok: false, status: 500, data: { error: 'network error' } }));
 
       lastRes = res;
-      const msgLower = String(res.data?.message || res.data?.msg || '').toLowerCase();
+      const msgText = String(res.data?.message || res.data?.msg || res.data?.error || '');
+      const msgLower = msgText.toLowerCase();
       const alreadyClaimed =
         msgLower.includes('already claimed') ||
         msgLower.includes('already_claimed') ||
         msgLower.includes('已领取');
 
       if (this.isApiSuccess(res) || alreadyClaimed) {
+        onStepLog?.(
+          'success',
+          `领奖接口 ${attempt.path} 成功 (HTTP ${res.status}${alreadyClaimed ? ', 奖励此前已领取' : ''})，正在补报收下奖励埋点`
+        );
         // Report Growth Center reward modal confirmation telemetry ("收下奖励")
         await this.reportTelemetryEvents(
           [
@@ -706,6 +712,11 @@ export class WorkBuddyRealApi {
           endpoint: attempt.path,
           message: alreadyClaimed ? '该任务奖励已领取' : '奖励领取成功',
         };
+      } else {
+        onStepLog?.(
+          'info',
+          `领奖尝试 ${attempt.path} -> HTTP ${res.status}, code=${res.data?.code ?? '-'}, 提示=${msgText || '无'}`
+        );
       }
     }
 
@@ -852,7 +863,8 @@ export class WorkBuddyRealApi {
     promptText: string,
     credentials: string,
     authType: 'cookie' | 'token',
-    desktopHeaders: Record<string, string>
+    desktopHeaders: Record<string, string>,
+    onStepLog?: (level: 'info' | 'warn' | 'error' | 'success', message: string) => void
   ): Promise<{
     convId: string;
     hasRealConv: boolean;
@@ -870,6 +882,13 @@ export class WorkBuddyRealApi {
       ...(payload.expertId ? { expertId: payload.expertId, expert_id: payload.expertId } : {}),
       ...(payload.templateId ? { templateId: payload.templateId, template_id: payload.templateId } : {}),
     };
+
+    onStepLog?.(
+      'info',
+      `正在调用 POST /console/as/conversations/ 创建云端沙箱会话 (origin=${createBody.conversationOrigin}${
+        payload.expertId ? `, expertId=${payload.expertId}` : ''
+      })...`
+    );
 
     const res = await this.request(
       '/console/as/conversations/',
@@ -889,8 +908,10 @@ export class WorkBuddyRealApi {
     let acpDetail = realId ? '未拿到沙箱 ACP 连接凭证' : `建会话未返回ID (HTTP ${createStatus})`;
 
     if (realId) {
+      onStepLog?.('info', `云端会话创建成功：HTTP ${createStatus}, conversationId=${realId}`);
       let sessionInfo = convData?.session;
       if (!sessionInfo?.link || !sessionInfo?.token) {
+        onStepLog?.('info', `建会话未直接内联 session，正在查询 /console/as/conversations/${realId}/session...`);
         const sessRes = await this.request(
           `/console/as/conversations/${encodeURIComponent(String(realId))}/session`,
           'GET',
@@ -900,6 +921,14 @@ export class WorkBuddyRealApi {
           desktopHeaders
         ).catch(() => null);
         sessionInfo = sessRes?.data?.data || sessRes?.data || sessionInfo;
+        onStepLog?.(
+          sessionInfo?.link ? 'info' : 'warn',
+          `查询 /session 返回 HTTP ${sessRes?.status || 0}, link=${sessionInfo?.link ? '已获取' : '空'}, token=${
+            sessionInfo?.token ? '已获取' : '空'
+          }`
+        );
+      } else {
+        onStepLog?.('info', `建会话已直接返回沙箱 session (sessionId=${sessionInfo.sessionId || realId})`);
       }
 
       const acpLink = sessionInfo?.link || sessionInfo?.endpoint || '';
@@ -908,6 +937,7 @@ export class WorkBuddyRealApi {
       const acpCwd = sessionInfo?.cwd || '/workspace';
 
       if (acpLink && acpToken) {
+        onStepLog?.('info', `正在连接沙箱 ACP 通道 (/acp/bootstrap -> session/prompt, sessionId=${acpSessionId})...`);
         const reqId = `req_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
         const acpPayload = {
           link: String(acpLink),
@@ -946,13 +976,21 @@ export class WorkBuddyRealApi {
           if (acpRes?.ok) {
             messageSent = true;
             acpDetail = acpRes.detail || 'ACP 沙箱对话发送成功';
+            onStepLog?.('success', `ACP 沙箱对话结果：${acpDetail} (HTTP ${acpRes.status || 200})`);
           } else {
             acpDetail = acpRes?.detail || `ACP 对话失败 (HTTP ${acpRes?.status || 0})`;
+            onStepLog?.('warn', `ACP 沙箱对话未成功：${acpDetail}`);
           }
         } catch (err: unknown) {
           acpDetail = `ACP 调用异常: ${err instanceof Error ? err.message : 'unknown'}`;
+          onStepLog?.('warn', acpDetail);
         }
+      } else {
+        onStepLog?.('warn', `沙箱凭证缺失，无法发起 ACP 对话：link=${acpLink ? '有' : '无'}, token=${acpToken ? '有' : '无'}`);
       }
+    } else {
+      const errMsg = res?.data?.message || res?.data?.msg || res?.data?.error || '';
+      onStepLog?.('warn', `云端会话创建未返回 ID：HTTP ${createStatus}${errMsg ? `, 原因=${errMsg}` : ''}`);
     }
 
     const cleanup = async () => {
@@ -978,7 +1016,8 @@ export class WorkBuddyRealApi {
     credentials: string,
     authType: 'cookie' | 'token',
     desktopHeaders: Record<string, string>,
-    enterpriseId?: string
+    enterpriseId?: string,
+    onStepLog?: (level: 'info' | 'warn' | 'error' | 'success', message: string) => void
   ): Promise<{
     experts: Array<{
       id: string;
@@ -1104,6 +1143,11 @@ export class WorkBuddyRealApi {
       { path: '/console/operation-platform/market/expert/list', body: listBody }
     );
 
+    onStepLog?.(
+      'info',
+      `正在检索官方${isTeam ? '专家团' : '专家'}列表${specificExpertName ? `（目标「${specificExpertName}」）` : ''}...`
+    );
+
     for (const ep of marketPayloads) {
       const res = await this.request(ep.path, 'POST', credentials, authType, ep.body, desktopHeaders).catch(
         () => null
@@ -1112,8 +1156,10 @@ export class WorkBuddyRealApi {
       if (items.length > 0) {
         diagnostics.push(`${ep.path}:${items.length}`);
         items.forEach((item) => pushCandidate(item, 'market', isTeam));
+        onStepLog?.('info', `检索 ${ep.path} -> HTTP ${res?.status}, 获取 ${items.length} 条`);
       } else if (res?.status) {
         diagnostics.push(`${ep.path}=HTTP${res.status}`);
+        onStepLog?.('info', `检索 ${ep.path} -> HTTP ${res.status}, 返回 0 条`);
       }
     }
 
@@ -1138,6 +1184,7 @@ export class WorkBuddyRealApi {
         if (items.length > 0) {
           diagnostics.push(`${prefix}/ent-market:${items.length}`);
           items.forEach((item) => pushCandidate(item, 'enterprise', isTeam));
+          onStepLog?.('info', `检索企业市场 ${prefix}/expert-market -> 获取 ${items.length} 条`);
           break;
         }
       }
@@ -1186,6 +1233,7 @@ export class WorkBuddyRealApi {
       catItems.forEach((item) => pushCandidate(item, 'market'));
     }
 
+    onStepLog?.('info', `专家池汇总完成：共去重收录 ${collected.length} 个候选（来源: ${diagnostics.join(', ') || '无'}）`);
     return { experts: collected, diagnostics };
   }
 
@@ -1194,7 +1242,8 @@ export class WorkBuddyRealApi {
     task: WorkBuddyTask | WorkBuddyRawTask,
     credentials: string,
     authType: 'cookie' | 'token',
-    extraHeaders?: Record<string, string>
+    extraHeaders?: Record<string, string>,
+    onStepLog?: (level: 'info' | 'warn' | 'error' | 'success', message: string) => void
   ): Promise<{ triggered: boolean; claimed: boolean; status: number; detail: string }> {
     const taskCode = 'task_code' in task ? task.task_code : task.id;
     const title = ('title' in task ? task.title : task.name) || '';
@@ -1211,7 +1260,15 @@ export class WorkBuddyRealApi {
         task.currentProgress >= task.targetProgress &&
         task.status !== '已领奖');
 
+    onStepLog?.('info', `开始处理任务 (task_code=${taskCode}, 目标进度=${targetCount})，正在解析账号身份...`);
     const identity = await this.resolveAccountIdentity(credentials, authType, extraHeaders);
+    onStepLog?.(
+      'info',
+      `身份确认：uid=${identity.uid || '未知'}, nickname=${identity.nickname}${
+        identity.enterpriseId ? `, enterpriseId=${identity.enterpriseId}` : ''
+      }`
+    );
+
     const desktopUA =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) WorkBuddy/5.9.0 Chrome/131.0.0.0 Electron/33.2.0 Safari/537.36';
 
@@ -1227,7 +1284,8 @@ export class WorkBuddyRealApi {
 
     // Fast path: if task is already completed ("领取奖励"), claim directly without re-running!
     if (isAlreadyReadyToClaim) {
-      const directClaim = await this.claimTaskReward(taskCode, credentials, authType, extraHeaders);
+      onStepLog?.('info', '服务端状态显示已达标，跳过执行步骤直接尝试领取奖励...');
+      const directClaim = await this.claimTaskReward(taskCode, credentials, authType, extraHeaders, onStepLog);
       if (directClaim.ok) {
         return {
           triggered: true,
@@ -1245,7 +1303,8 @@ export class WorkBuddyRealApi {
     }
 
     // Step 1: Ensure task is accepted in Growth Center
-    await this.acceptTasks([taskCode], credentials, authType, extraHeaders).catch(() => null);
+    const acceptRes = await this.acceptTasks([taskCode], credentials, authType, extraHeaders).catch(() => null);
+    onStepLog?.('info', `步骤1: 确认接取任务 (/activity/growth/tasks/accept) -> HTTP ${acceptRes?.status || 0}`);
 
     let anyTriggerOk = false;
     let traceDetail = '';
@@ -1322,7 +1381,8 @@ export class WorkBuddyRealApi {
         inspPrompt,
         credentials,
         authType,
-        desktopHeaders
+        desktopHeaders,
+        onStepLog
       );
       const convId = turn.convId;
       pendingCleanups.push(turn.cleanup);
@@ -1621,6 +1681,7 @@ export class WorkBuddyRealApi {
       ).catch(() => null);
 
       const skillPrompt = `请使用技能「${skillName}」帮我整理一份今日重点待办摘要。`;
+      onStepLog?.('info', `步骤2: 选中技能 ${skillName} (id=${skillId})，安装返回 HTTP ${installRes?.status || 0}，准备创建云端会话并使用该技能...`);
       const turn = await this.executeCloudConversationTurn(
         {
           prompt: skillPrompt,
@@ -1631,7 +1692,8 @@ export class WorkBuddyRealApi {
         skillPrompt,
         credentials,
         authType,
-        desktopHeaders
+        desktopHeaders,
+        onStepLog
       );
       pendingCleanups.push(turn.cleanup);
       if (turn.messageSent) anyTriggerOk = true;
@@ -1813,6 +1875,7 @@ export class WorkBuddyRealApi {
         const tplPrompt = String(tpl.prompt || tpl.description || `使用模板「${tplName}」生成示例内容`);
         const actionId = `${tplId}:${i}`;
 
+        onStepLog?.('info', `第 ${i + 1}/${count} 轮：正在使用模板「${tplName}」(id=${tplId}) 创建云端对话...`);
         const turn = await this.executeCloudConversationTurn(
           {
             prompt: tplPrompt,
@@ -1822,7 +1885,8 @@ export class WorkBuddyRealApi {
           tplPrompt,
           credentials,
           authType,
-          desktopHeaders
+          desktopHeaders,
+          onStepLog
         );
         const convId = turn.convId;
         pendingCleanups.push(turn.cleanup);
@@ -1908,13 +1972,15 @@ export class WorkBuddyRealApi {
         if (kbRes?.ok) anyTriggerOk = true;
       }
 
+      onStepLog?.('info', '步骤2: 正在创建云端会话并发起资料库咨询对话...');
       const kbPrompt = '请介绍一下 WorkBuddy 资料库的核心功能和使用方法。';
       const turn = await this.executeCloudConversationTurn(
         { prompt: kbPrompt, tags: ['knowledge_base'] },
         kbPrompt,
         credentials,
         authType,
-        desktopHeaders
+        desktopHeaders,
+        onStepLog
       );
       pendingCleanups.push(turn.cleanup);
       if (turn.messageSent) anyTriggerOk = true;
@@ -1952,6 +2018,7 @@ export class WorkBuddyRealApi {
       ];
 
       for (let i = 0; i < count; i++) {
+        onStepLog?.('info', `第 ${i + 1}/${count} 轮 AI 对话：正在创建云端会话并发送 ACP 消息...`);
         const promptText = chatPrompts[i % chatPrompts.length];
         const turn = await this.executeCloudConversationTurn(
           {
@@ -1962,7 +2029,8 @@ export class WorkBuddyRealApi {
           promptText,
           credentials,
           authType,
-          desktopHeaders
+          desktopHeaders,
+          onStepLog
         );
         pendingCleanups.push(turn.cleanup);
         if (turn.messageSent) anyTriggerOk = true;
@@ -2025,7 +2093,8 @@ export class WorkBuddyRealApi {
         credentials,
         authType,
         desktopHeaders,
-        identity.enterpriseId
+        identity.enterpriseId,
+        onStepLog
       );
       const allExperts = resolved.experts;
       const teamPool = allExperts.filter((e) => e.isTeam);
@@ -2075,9 +2144,14 @@ export class WorkBuddyRealApi {
           usedExpertIds.add(expertId);
         }
 
+        onStepLog?.(
+          expertId ? 'info' : 'warn',
+          `第 ${i + 1}/${iterations} 轮召唤：目标=「${targetName}」, 命中ID=${expertId || '未命中'}, type=${expertType}, source=${expertSource}`
+        );
+
         // Fetch detail via official get-by-ids endpoint if market expert found
         if (expertId) {
-          await this.request(
+          const detailRes = await this.request(
             '/portal/operation-platform/market/expert/get-by-ids',
             'POST',
             credentials,
@@ -2085,6 +2159,7 @@ export class WorkBuddyRealApi {
             { expert_ids: [expertId], include_invisible: false },
             desktopHeaders
           ).catch(() => null);
+          onStepLog?.('info', `拉取专家详情 /market/expert/get-by-ids -> HTTP ${detailRes?.status || 0}`);
         }
 
         const promptText =
@@ -2102,7 +2177,8 @@ export class WorkBuddyRealApi {
           promptText,
           credentials,
           authType,
-          desktopHeaders
+          desktopHeaders,
+          onStepLog
         );
         const convId = turn.convId;
         pendingCleanups.push(turn.cleanup);
@@ -2125,6 +2201,10 @@ export class WorkBuddyRealApi {
             },
             desktopHeaders
           ).catch(() => null);
+          onStepLog?.(
+            usageRes?.ok ? 'info' : 'warn',
+            `上报资产使用 /asset-usage/report -> HTTP ${usageRes?.status || 0}, code=${usageRes?.data?.code ?? '-'}`
+          );
           if (usageRes?.ok) {
             anyTriggerOk = true;
             usageOk = true;
@@ -2220,6 +2300,12 @@ export class WorkBuddyRealApi {
         ];
 
         const repRes = await this.reportTelemetryEvents(reportEvents, credentials, authType, desktopHeaders);
+        onStepLog?.(
+          repRes.ok ? 'info' : 'warn',
+          `上报官方埋点 /v2/report (${reportEvents.map((e) => e.eventCode).join(', ')}) -> HTTP ${repRes.status}, code=${
+            repRes.data?.code ?? '-'
+          }`
+        );
         if (repRes.ok && expertId && turn.messageSent) anyTriggerOk = true;
 
         iterLogs.push(
@@ -2231,13 +2317,15 @@ export class WorkBuddyRealApi {
     }
 
     // Give official server enough time to settle sandbox ACP message & async task counters before checking & cleaning up
+    onStepLog?.('info', '操作执行完毕，等待 1.5s 让服务端异步结算任务计数，随后尝试自动领奖...');
     await new Promise((r) => setTimeout(r, 1500));
 
     // Step 3: Attempt to claim reward right away
-    let claimRes = await this.claimTaskReward(taskCode, credentials, authType, extraHeaders);
+    let claimRes = await this.claimTaskReward(taskCode, credentials, authType, extraHeaders, onStepLog);
     let claimed = claimRes.ok;
 
     // Step 4: Re-fetch /v2/activity/growth/tasks to verify real server-side progress and status
+    onStepLog?.('info', '正在回查 /v2/activity/growth/tasks 核验服务端最新进度与领奖状态...');
     const verifyRes = await this.getGrowthTasks(credentials, authType, extraHeaders).catch(() => null);
     const rawTasks: WorkBuddyRawTask[] =
       verifyRes?.data?.data?.tasks || verifyRes?.data?.tasks || verifyRes?.data?.data || [];
@@ -2246,12 +2334,19 @@ export class WorkBuddyRealApi {
       : undefined;
 
     // Clean up temporary conversations AFTER verification so server sees active dialogue turns first
-    for (const cleanupFn of pendingCleanups) {
-      await cleanupFn().catch(() => null);
+    if (pendingCleanups.length > 0) {
+      onStepLog?.('info', `正在清理 ${pendingCleanups.length} 个临时云端测试会话...`);
+      for (const cleanupFn of pendingCleanups) {
+        await cleanupFn().catch(() => null);
+      }
     }
 
     if (updatedRaw) {
       const mapped = mapRawTaskToWorkBuddyTask(updatedRaw);
+      onStepLog?.(
+        mapped.currentProgress >= mapped.targetProgress ? 'success' : 'warn',
+        `服务端核验结果：进度 ${mapped.currentProgress}/${mapped.targetProgress}, accept_status=${updatedRaw.accept_status}, 映射状态=${mapped.status}`
+      );
       if (mapped.status === '已领奖') {
         claimed = true;
       } else if (
@@ -2259,7 +2354,8 @@ export class WorkBuddyRealApi {
         mapped.status === '待领奖' ||
         (mapped.targetProgress > 0 && mapped.currentProgress >= mapped.targetProgress)
       ) {
-        const retryClaim = await this.claimTaskReward(taskCode, credentials, authType, extraHeaders);
+        onStepLog?.('info', '核验发现进度已满但未领奖，正在二次触发领奖接口...');
+        const retryClaim = await this.claimTaskReward(taskCode, credentials, authType, extraHeaders, onStepLog);
         claimRes = retryClaim;
         if (retryClaim.ok) {
           claimed = true;
