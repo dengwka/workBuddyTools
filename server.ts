@@ -2,6 +2,10 @@ import express, { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import http from 'http';
+import https from 'https';
+import tls from 'tls';
+import crypto from 'crypto';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 
@@ -65,7 +69,7 @@ async function fetchLatestReleaseInfo() {
     const apiRes = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
       headers: {
         Accept: 'application/vnd.github+json',
-        'User-Agent': 'WorkBuddyTools-Updater/1.3.2',
+        'User-Agent': 'WorkBuddyTools-Updater/1.0.0',
       },
       signal: AbortSignal.timeout(10000),
     });
@@ -89,7 +93,7 @@ async function fetchLatestReleaseInfo() {
     try {
       const res = await fetch(pageUrl, {
         redirect: 'follow',
-        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.2' },
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.0' },
         signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) continue;
@@ -107,7 +111,7 @@ async function fetchLatestReleaseInfo() {
         : `https://github.com/${GITHUB_REPO}/releases/expanded_assets/${tagName}`;
 
       const expRes = await fetch(expandedUrl, {
-        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.2' },
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.0' },
         signal: AbortSignal.timeout(10000),
       });
       const expHtml = expRes.ok ? await expRes.text() : html;
@@ -205,7 +209,7 @@ async function runServerStreamUpdate(job: UpdateJobState, downloadUrl: string, m
       try {
         res = await fetch(candidate.url, {
           redirect: 'follow',
-          headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.2' },
+          headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.0' },
           signal: controller.signal,
         });
       } finally {
@@ -770,6 +774,314 @@ async function startServer() {
       return res.status(404).send('File not ready');
     }
     return res.download(job.filePath, job.fileName);
+  });
+
+  // =========================================================================
+  // License Authorization Proxy & Machine MAC Helper (https://dengwk.ai.studio)
+  // =========================================================================
+  const LICENSE_API_BASE = 'https://dengwk.ai.studio';
+  const LICENSE_ALLOWED_PATHS = new Set(['/api/activate', '/api/verify', '/api/verify-offline']);
+  const LICENSE_FILE_PATH = path.join(os.homedir(), '.workbuddytools-license.json');
+
+  const readServerLicenseFile = () => {
+    try {
+      if (fs.existsSync(LICENSE_FILE_PATH)) {
+        return JSON.parse(fs.readFileSync(LICENSE_FILE_PATH, 'utf8'));
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  };
+
+  const writeServerLicenseFile = (payload: unknown) => {
+    try {
+      if (!payload) {
+        if (fs.existsSync(LICENSE_FILE_PATH)) fs.unlinkSync(LICENSE_FILE_PATH);
+        return true;
+      }
+      fs.writeFileSync(LICENSE_FILE_PATH, JSON.stringify(payload, null, 2), 'utf8');
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const collectServerMacInfo = () => {
+    const interfaces = os.networkInterfaces();
+    const candidates: Array<{ name: string; mac: string; score: number }> = [];
+    const virtualPattern = /virtual|vmware|vbox|hyper-v|vethernet|docker|br-|virbr|utun|tun|tap|loopback|teredo|isatap|bluetooth|npcap/i;
+
+    for (const [name, addrs] of Object.entries(interfaces || {})) {
+      if (!Array.isArray(addrs)) continue;
+      for (const addr of addrs) {
+        if (!addr || addr.internal) continue;
+        const mac = String(addr.mac || '').trim().toUpperCase();
+        if (!mac || mac === '00:00:00:00:00:00') continue;
+        const isVirtual = virtualPattern.test(name);
+        const isPhysicalName = /^(en0|eth0|wlan0|wi-fi|ethernet|以太网|本地连接|en\d+|eth\d+)/i.test(name);
+        candidates.push({
+          name,
+          mac,
+          score: (isPhysicalName ? 10 : 0) + (isVirtual ? -10 : 5) + (addr.family === 'IPv4' ? 2 : 0),
+        });
+      }
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    const uniqueMacs: string[] = [];
+    const seen = new Set<string>();
+    for (const c of candidates) {
+      if (!seen.has(c.mac)) {
+        seen.add(c.mac);
+        uniqueMacs.push(c.mac);
+      }
+    }
+
+    const saved = readServerLicenseFile();
+    let primaryMac =
+      saved?.macAddress && uniqueMacs.includes(String(saved.macAddress).toUpperCase())
+        ? String(saved.macAddress).toUpperCase()
+        : uniqueMacs[0] || (saved?.macAddress ? String(saved.macAddress).toUpperCase() : '');
+
+    if (!primaryMac) {
+      const rawSeed = `${os.hostname()}|${os.platform()}|${os.arch()}|${os.userInfo().username}`;
+      const hash = crypto.createHash('sha256').update(rawSeed).digest();
+      const bytes = [(hash[0] & 0xfe) | 0x02, hash[1], hash[2], hash[3], hash[4], hash[5]];
+      primaryMac = bytes.map((b) => b.toString(16).padStart(2, '0').toUpperCase()).join(':');
+    }
+
+    return { macAddress: primaryMac, allMacs: uniqueMacs, savedLicense: saved };
+  };
+
+  const postJsonViaProxy = (targetUrl: string, bodyStr: string, proxyUrl: string, timeoutMs: number) =>
+    new Promise<{ status: number; data: Record<string, unknown> }>((resolve, reject) => {
+      const target = new URL(targetUrl);
+      const proxy = new URL(proxyUrl);
+      const proxyPort = Number(proxy.port) || (proxy.protocol === 'https:' ? 443 : 80);
+      const targetPort = Number(target.port) || 443;
+      const authHeader =
+        proxy.username || proxy.password
+          ? `Basic ${Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`).toString('base64')}`
+          : '';
+
+      let settled = false;
+      const finishErr = (err: Error) => {
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
+      };
+
+      const connectReq = http.request({
+        host: proxy.hostname,
+        port: proxyPort,
+        method: 'CONNECT',
+        path: `${target.hostname}:${targetPort}`,
+        headers: {
+          Host: `${target.hostname}:${targetPort}`,
+          ...(authHeader ? { 'Proxy-Authorization': authHeader } : {}),
+        },
+        timeout: timeoutMs,
+      });
+
+      connectReq.on('timeout', () => connectReq.destroy(new Error('代理连接超时')));
+      connectReq.on('error', finishErr);
+      connectReq.on('connect', (connectRes, socket) => {
+        if (connectRes.statusCode !== 200) {
+          socket.destroy();
+          return finishErr(new Error(`代理 CONNECT 返回 HTTP ${connectRes.statusCode}`));
+        }
+        const req = https.request(
+          {
+            host: target.hostname,
+            port: targetPort,
+            servername: target.hostname,
+            path: `${target.pathname}${target.search}`,
+            method: 'POST',
+            agent: false,
+            createConnection: () => tls.connect({ socket, servername: target.hostname }),
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+              'User-Agent': 'WorkBuddyTools-License/1.0.0',
+              'Content-Length': Buffer.byteLength(bodyStr),
+            },
+            timeout: timeoutMs,
+          },
+          (apiRes) => {
+            let raw = '';
+            apiRes.setEncoding('utf8');
+            apiRes.on('data', (chunk) => (raw += chunk));
+            apiRes.on('end', () => {
+              socket.destroy();
+              if (!settled) {
+                settled = true;
+                let data: Record<string, unknown> = {};
+                try {
+                  data = JSON.parse(raw);
+                } catch {
+                  data = { raw };
+                }
+                resolve({ status: apiRes.statusCode || 200, data });
+              }
+            });
+          }
+        );
+        req.on('timeout', () => req.destroy(new Error('经代理请求超时')));
+        req.on('error', (err) => {
+          socket.destroy();
+          finishErr(err);
+        });
+        req.write(bodyStr);
+        req.end();
+      });
+      connectReq.end();
+    });
+
+  const postJsonIpv4 = (targetUrl: string, bodyStr: string, timeoutMs: number) =>
+    new Promise<{ status: number; data: Record<string, unknown> }>((resolve, reject) => {
+      const target = new URL(targetUrl);
+      let settled = false;
+      const req = https.request(
+        {
+          hostname: target.hostname,
+          port: Number(target.port) || 443,
+          path: `${target.pathname}${target.search}`,
+          method: 'POST',
+          family: 4,
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'User-Agent': 'WorkBuddyTools-License/1.0.0',
+            'Content-Length': Buffer.byteLength(bodyStr),
+          },
+          timeout: timeoutMs,
+        },
+        (apiRes) => {
+          let raw = '';
+          apiRes.setEncoding('utf8');
+          apiRes.on('data', (chunk) => (raw += chunk));
+          apiRes.on('end', () => {
+            if (!settled) {
+              settled = true;
+              let data: Record<string, unknown> = {};
+              try {
+                data = JSON.parse(raw);
+              } catch {
+                data = { raw };
+              }
+              resolve({ status: apiRes.statusCode || 200, data });
+            }
+          });
+        }
+      );
+      req.on('timeout', () => req.destroy(new Error('IPv4直连请求超时')));
+      req.on('error', (err) => {
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
+      });
+      req.write(bodyStr);
+      req.end();
+    });
+
+  app.get('/api/license/machine-info', (_req: Request, res: Response) => {
+    return res.json(collectServerMacInfo());
+  });
+
+  app.post('/api/license/save', (req: Request, res: Response) => {
+    const ok = writeServerLicenseFile(req.body ?? null);
+    return res.json({ ok });
+  });
+
+  app.post('/api/license/request', async (req: Request, res: Response) => {
+    const { endpoint, body, proxyUrl, timeoutMs = 35000 } = req.body || {};
+    const cleanPath = String(endpoint || '').trim();
+    if (!LICENSE_ALLOWED_PATHS.has(cleanPath)) {
+      return res.status(400).json({ ok: false, status: 400, networkError: false, data: { message: '不允许的授权接口路径' } });
+    }
+
+    const targetUrl = `${LICENSE_API_BASE}${cleanPath}`;
+    const bodyStr = JSON.stringify(body || {});
+    const effectiveTimeout = Math.max(15000, Math.min(Number(timeoutMs) || 35000, 60000));
+    const errors: string[] = [];
+
+    const envProxy =
+      proxyUrl ||
+      process.env.HTTPS_PROXY ||
+      process.env.https_proxy ||
+      process.env.HTTP_PROXY ||
+      process.env.http_proxy ||
+      '';
+
+    if (envProxy && /^https?:\/\//i.test(String(envProxy).trim())) {
+      try {
+        const proxyRes = await postJsonViaProxy(targetUrl, bodyStr, String(envProxy).trim(), effectiveTimeout);
+        return res.json({
+          ok: proxyRes.status >= 200 && proxyRes.status < 300,
+          status: proxyRes.status,
+          networkError: false,
+          channelUsed: 'proxy-connect',
+          data: proxyRes.data,
+        });
+      } catch (err) {
+        errors.push(`代理通道: ${err instanceof Error ? err.message : '失败'}`);
+      }
+    }
+
+    try {
+      const apiRes = await fetch(targetUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'User-Agent': 'WorkBuddyTools-License/1.0.0',
+        },
+        body: bodyStr,
+        signal: AbortSignal.timeout(effectiveTimeout),
+      });
+      const text = await apiRes.text().catch(() => '');
+      let data: Record<string, unknown> = {};
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { raw: text };
+      }
+      if (apiRes.status < 500) {
+        return res.json({
+          ok: apiRes.ok,
+          status: apiRes.status,
+          networkError: false,
+          channelUsed: 'server-fetch',
+          data,
+        });
+      }
+      errors.push(`直连通道: HTTP ${apiRes.status}`);
+    } catch (err) {
+      errors.push(`直连通道: ${err instanceof Error ? err.message : '超时或不可达'}`);
+    }
+
+    try {
+      const ipv4Res = await postJsonIpv4(targetUrl, bodyStr, effectiveTimeout);
+      return res.json({
+        ok: ipv4Res.status >= 200 && ipv4Res.status < 300,
+        status: ipv4Res.status,
+        networkError: ipv4Res.status >= 500,
+        channelUsed: 'node-ipv4',
+        data: ipv4Res.data,
+      });
+    } catch (err) {
+      errors.push(`IPv4直连: ${err instanceof Error ? err.message : '失败'}`);
+    }
+
+    return res.json({
+      ok: false,
+      status: 0,
+      networkError: true,
+      data: { message: `连接授权服务器超时或网络不可达 (${errors.join(' | ')})` },
+    });
   });
 
   // Health check

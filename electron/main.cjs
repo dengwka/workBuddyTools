@@ -1,7 +1,12 @@
 // Electron Main Process for WorkBuddy Tools (with kuaixuntong-style Stream Updater & CORS Proxy)
-const { app, BrowserWindow, ipcMain, shell, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, net } = require('electron');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const http = require('http');
+const https = require('https');
+const tls = require('tls');
+const crypto = require('crypto');
 
 let mainWindow = null;
 
@@ -126,7 +131,7 @@ async function fetchLatestReleaseInfo() {
     const apiRes = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
       headers: {
         Accept: 'application/vnd.github+json',
-        'User-Agent': 'WorkBuddyTools-Updater/1.3.2',
+        'User-Agent': 'WorkBuddyTools-Updater/1.0.0',
       },
       signal: AbortSignal.timeout(10000),
     });
@@ -150,7 +155,7 @@ async function fetchLatestReleaseInfo() {
     try {
       const res = await fetch(pageUrl, {
         redirect: 'follow',
-        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.2' },
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.0' },
         signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) continue;
@@ -168,7 +173,7 @@ async function fetchLatestReleaseInfo() {
         : `https://github.com/${GITHUB_REPO}/releases/expanded_assets/${tagName}`;
 
       const expRes = await fetch(expandedUrl, {
-        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.2' },
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.0' },
         signal: AbortSignal.timeout(10000),
       });
       const expHtml = expRes.ok ? await expRes.text() : html;
@@ -220,7 +225,7 @@ async function executeStreamDownload(targetUrl, originalFileName, nodeName, emit
   try {
     res = await fetch(targetUrl, {
       redirect: 'follow',
-      headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.2' },
+      headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.0' },
       signal: controller.signal,
     });
   } finally {
@@ -750,6 +755,338 @@ ipcMain.handle('workbuddy:open-external', async (_event, targetUrl) => {
   return { ok: false };
 });
 
+// =========================================================================
+// License Authorization Subsystem (KeyVault: https://dengwk.ai.studio, SYS00002)
+// =========================================================================
+const LICENSE_API_BASE = 'https://dengwk.ai.studio';
+const LICENSE_ALLOWED_PATHS = new Set(['/api/activate', '/api/verify', '/api/verify-offline']);
+
+function getLicenseStoragePath() {
+  try {
+    return path.join(app.getPath('userData'), 'workbuddy-license.json');
+  } catch {
+    return path.join(os.tmpdir(), 'workbuddy-license.json');
+  }
+}
+
+function readSavedLicenseFile() {
+  try {
+    const filePath = getLicenseStoragePath();
+    if (fs.existsSync(filePath)) {
+      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    }
+  } catch {
+    // ignore corrupted license cache
+  }
+  return null;
+}
+
+function writeSavedLicenseFile(payload) {
+  try {
+    const filePath = getLicenseStoragePath();
+    if (!payload) {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      return true;
+    }
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function collectHardwareMacInfo() {
+  const interfaces = os.networkInterfaces();
+  const candidates = [];
+  const virtualPattern = /virtual|vmware|vbox|hyper-v|vethernet|docker|br-|virbr|utun|tun|tap|loopback|teredo|isatap|bluetooth|npcap/i;
+
+  for (const [name, addrs] of Object.entries(interfaces || {})) {
+    if (!Array.isArray(addrs)) continue;
+    for (const addr of addrs) {
+      if (!addr || addr.internal) continue;
+      const mac = String(addr.mac || '').trim().toUpperCase();
+      if (!mac || mac === '00:00:00:00:00:00') continue;
+      const isVirtual = virtualPattern.test(name);
+      const isPhysicalName = /^(en0|eth0|wlan0|wi-fi|ethernet|以太网|本地连接|en\d+|eth\d+)/i.test(name);
+      candidates.push({
+        name,
+        mac,
+        score: (isPhysicalName ? 10 : 0) + (isVirtual ? -10 : 5) + (addr.family === 'IPv4' ? 2 : 0),
+      });
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  const uniqueMacs = [];
+  const seen = new Set();
+  for (const c of candidates) {
+    if (!seen.has(c.mac)) {
+      seen.add(c.mac);
+      uniqueMacs.push(c.mac);
+    }
+  }
+
+  const saved = readSavedLicenseFile();
+  let primaryMac = (saved && saved.macAddress && uniqueMacs.includes(String(saved.macAddress).toUpperCase()))
+    ? String(saved.macAddress).toUpperCase()
+    : uniqueMacs[0] || (saved && saved.macAddress ? String(saved.macAddress).toUpperCase() : '');
+
+  if (!primaryMac) {
+    const rawSeed = `${os.hostname()}|${os.platform()}|${os.arch()}|${os.userInfo().username}`;
+    const hash = crypto.createHash('sha256').update(rawSeed).digest();
+    const bytes = [ (hash[0] & 0xfe) | 0x02, hash[1], hash[2], hash[3], hash[4], hash[5] ];
+    primaryMac = bytes.map((b) => b.toString(16).padStart(2, '0').toUpperCase()).join(':');
+  }
+
+  return { macAddress: primaryMac, allMacs: uniqueMacs, savedLicense: saved };
+}
+
+function postJsonViaHttpConnectProxy(targetUrl, bodyStr, proxyUrl, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(targetUrl);
+    const proxy = new URL(proxyUrl);
+    const proxyPort = Number(proxy.port) || (proxy.protocol === 'https:' ? 443 : 80);
+    const targetPort = Number(target.port) || 443;
+    const authHeader =
+      proxy.username || proxy.password
+        ? `Basic ${Buffer.from(`${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`).toString('base64')}`
+        : '';
+
+    let settled = false;
+    const finishErr = (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    };
+
+    const connectReq = http.request({
+      host: proxy.hostname,
+      port: proxyPort,
+      method: 'CONNECT',
+      path: `${target.hostname}:${targetPort}`,
+      headers: {
+        Host: `${target.hostname}:${targetPort}`,
+        ...(authHeader ? { 'Proxy-Authorization': authHeader } : {}),
+      },
+      timeout: timeoutMs,
+    });
+
+    connectReq.on('timeout', () => {
+      connectReq.destroy(new Error('代理连接超时'));
+    });
+    connectReq.on('error', finishErr);
+
+    connectReq.on('connect', (res, socket) => {
+      if (res.statusCode !== 200) {
+        socket.destroy();
+        return finishErr(new Error(`代理 CONNECT 返回 HTTP ${res.statusCode}`));
+      }
+
+      const req = https.request(
+        {
+          host: target.hostname,
+          port: targetPort,
+          servername: target.hostname,
+          path: `${target.pathname}${target.search}`,
+          method: 'POST',
+          agent: false,
+          createConnection: () => tls.connect({ socket, servername: target.hostname }),
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+            'User-Agent': 'WorkBuddyTools-License/1.0.0',
+            'Content-Length': Buffer.byteLength(bodyStr),
+          },
+          timeout: timeoutMs,
+        },
+        (apiRes) => {
+          let raw = '';
+          apiRes.setEncoding('utf8');
+          apiRes.on('data', (chunk) => (raw += chunk));
+          apiRes.on('end', () => {
+            socket.destroy();
+            if (!settled) {
+              settled = true;
+              let data = {};
+              try {
+                data = JSON.parse(raw);
+              } catch {
+                data = { raw };
+              }
+              resolve({ status: apiRes.statusCode || 200, data });
+            }
+          });
+        }
+      );
+
+      req.on('timeout', () => req.destroy(new Error('经代理请求超时')));
+      req.on('error', (err) => {
+        socket.destroy();
+        finishErr(err);
+      });
+      req.write(bodyStr);
+      req.end();
+    });
+
+    connectReq.end();
+  });
+}
+
+function postJsonDirectIpv4(targetUrl, bodyStr, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(targetUrl);
+    let settled = false;
+    const req = https.request(
+      {
+        hostname: target.hostname,
+        port: Number(target.port) || 443,
+        path: `${target.pathname}${target.search}`,
+        method: 'POST',
+        family: 4,
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'User-Agent': 'WorkBuddyTools-License/1.0.0',
+          'Content-Length': Buffer.byteLength(bodyStr),
+        },
+        timeout: timeoutMs,
+      },
+      (apiRes) => {
+        let raw = '';
+        apiRes.setEncoding('utf8');
+        apiRes.on('data', (chunk) => (raw += chunk));
+        apiRes.on('end', () => {
+          if (!settled) {
+            settled = true;
+            let data = {};
+            try {
+              data = JSON.parse(raw);
+            } catch {
+              data = { raw };
+            }
+            resolve({ status: apiRes.statusCode || 200, data });
+          }
+        });
+      }
+    );
+    req.on('timeout', () => req.destroy(new Error('直连请求超时')));
+    req.on('error', (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
+    req.write(bodyStr);
+    req.end();
+  });
+}
+
+ipcMain.handle('workbuddy:license-get-info', () => {
+  return collectHardwareMacInfo();
+});
+
+ipcMain.handle('workbuddy:license-save', (_event, payload) => {
+  return { ok: writeSavedLicenseFile(payload) };
+});
+
+ipcMain.handle('workbuddy:license-request', async (_event, { endpoint, body, proxyUrl, timeoutMs = 35000 }) => {
+  const cleanPath = String(endpoint || '').trim();
+  if (!LICENSE_ALLOWED_PATHS.has(cleanPath)) {
+    return { ok: false, status: 400, networkError: false, data: { message: '不允许的授权接口路径' } };
+  }
+
+  const targetUrl = `${LICENSE_API_BASE}${cleanPath}`;
+  const bodyStr = JSON.stringify(body || {});
+  const effectiveTimeout = Math.max(15000, Math.min(Number(timeoutMs) || 35000, 60000));
+  const errors = [];
+
+  // Channel 1: Explicit user proxy or environment proxy (HTTP CONNECT)
+  const envProxy =
+    proxyUrl ||
+    process.env.HTTPS_PROXY ||
+    process.env.https_proxy ||
+    process.env.HTTP_PROXY ||
+    process.env.http_proxy ||
+    '';
+
+  if (envProxy && /^https?:\/\//i.test(String(envProxy).trim())) {
+    try {
+      const res = await postJsonViaHttpConnectProxy(targetUrl, bodyStr, String(envProxy).trim(), effectiveTimeout);
+      return {
+        ok: res.status >= 200 && res.status < 300,
+        status: res.status,
+        networkError: false,
+        channelUsed: 'proxy-connect',
+        data: res.data,
+      };
+    } catch (err) {
+      errors.push(`代理通道: ${err && err.message ? err.message : '失败'}`);
+    }
+  }
+
+  // Channel 2: Electron Chromium net.fetch (automatically leverages OS system proxy / VPN / WinINet / PAC)
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), effectiveTimeout);
+    try {
+      const res = await net.fetch(targetUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'User-Agent': 'WorkBuddyTools-License/1.0.0',
+        },
+        body: bodyStr,
+        signal: controller.signal,
+      });
+      const text = await res.text().catch(() => '');
+      let data = {};
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { raw: text };
+      }
+      if (res.status < 500) {
+        return {
+          ok: res.ok,
+          status: res.status,
+          networkError: false,
+          channelUsed: 'electron-net',
+          data,
+        };
+      }
+      errors.push(`系统网络栈: HTTP ${res.status}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (err) {
+    errors.push(`系统网络栈: ${err && err.message ? err.message : '超时或不可达'}`);
+  }
+
+  // Channel 3: IPv4-first Node https.request fallback (avoids IPv6 hang on overseas hosts)
+  try {
+    const res = await postJsonDirectIpv4(targetUrl, bodyStr, effectiveTimeout);
+    return {
+      ok: res.status >= 200 && res.status < 300,
+      status: res.status,
+      networkError: res.status >= 500,
+      channelUsed: 'node-ipv4',
+      data: res.data,
+    };
+  } catch (err) {
+    errors.push(`IPv4直连: ${err && err.message ? err.message : '失败'}`);
+  }
+
+  return {
+    ok: false,
+    status: 0,
+    networkError: true,
+    data: { message: `连接授权服务器超时或网络不可达 (${errors.join(' | ')})` },
+  };
+});
+
 function createWindow() {
   if (process.platform !== 'darwin') {
     Menu.setApplicationMenu(null);
@@ -765,7 +1102,7 @@ function createWindow() {
     frame: true,
     autoHideMenuBar: true,
     titleBarStyle: 'default',
-    title: 'WorkBuddy 自动化工具 v1.3.2',
+    title: 'WorkBuddy 自动化工具 v1.0.0',
     icon: path.join(__dirname, iconFile),
     backgroundColor: '#020617',
     webPreferences: {

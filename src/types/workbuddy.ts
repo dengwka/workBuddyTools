@@ -58,3 +58,43 @@ export interface ExecutionLog {
   level: 'info' | 'success' | 'warn' | 'error';
   message: string;
 }
+
+export type LicenseStatus =
+  | 'unlicensed'     // 未配置授权（安装/启动可跳过，但业务功能锁定）
+  | 'checking'       // 正在联网校验
+  | 'valid'          // 在线校验通过
+  | 'grace_offline'  // 弱网容错宽限态（此前已授权且未过期，网络波动不中断业务）
+  | 'invalid'        // 服务端明确拒绝（不存在/禁用/MAC冲突/编码不匹配）
+  | 'expired';       // 授权已过期（本地时间或服务端判定到期）
+
+export interface LicenseRecord {
+  licenseKey: string;
+  appType: string;
+  appName?: string;
+  macAddress: string;
+  expireTime: string;
+  remainingDays?: number;
+  activatedAt?: string;
+  lastVerifiedAt?: string;
+  proxyUrl?: string;
+  mode?: 'online' | 'offline';
+}
+
+export interface LicenseValidationState {
+  status: LicenseStatus;
+  isAuthorized: boolean; // valid 或有效的 grace_offline 返回 true
+  message: string;
+  code?: string;
+  remainingDays: number | null;
+  expireTime: string;
+  appType: string;
+  appName: string;
+  macAddress: string;
+  allMacs: string[];
+  licenseKey: string;
+  lastVerifiedAt?: string;
+  lastAttemptAt?: string;
+  channelUsed?: string;
+  isOfflineGrace: boolean;
+}
+

@@ -12,6 +12,7 @@ import {
   AlertCircle,
   MessageSquare,
   QrCode,
+  Lock,
 } from 'lucide-react';
 import { WorkBuddyTask } from '../types/workbuddy';
 import { sanitizeTaskProgress } from '../utils/workbuddyRealApi';
@@ -230,6 +231,9 @@ interface TaskAssistModalProps {
   task: WorkBuddyTask | null;
   onClose: () => void;
   onExecuteAndClaim: (task: WorkBuddyTask) => Promise<{ ok: boolean; message: string; points?: number }>;
+  isAuthorized?: boolean;
+  licenseMessage?: string;
+  onOpenLicenseModal?: () => void;
 }
 
 export const TaskAssistModal: React.FC<TaskAssistModalProps> = ({
@@ -237,6 +241,9 @@ export const TaskAssistModal: React.FC<TaskAssistModalProps> = ({
   task,
   onClose,
   onExecuteAndClaim,
+  isAuthorized = true,
+  licenseMessage,
+  onOpenLicenseModal,
 }) => {
   const [copiedKeyword, setCopiedKeyword] = useState(false);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
@@ -424,6 +431,30 @@ export const TaskAssistModal: React.FC<TaskAssistModalProps> = ({
             </div>
           )}
 
+          {/* License Lock Warning */}
+          {!isAuthorized && (
+            <div className="p-3 rounded-xl border border-rose-500/35 bg-rose-950/30 flex items-center justify-between gap-3">
+              <div className="flex items-start gap-2 text-rose-200">
+                <Lock className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <div className="text-[11px] leading-relaxed">
+                  {licenseMessage || '当前未通过 License 授权校验，已锁定自动执行与领奖功能。'}
+                </div>
+              </div>
+              {onOpenLicenseModal && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenLicenseModal();
+                  }}
+                  className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white text-[11px] font-medium rounded-lg shrink-0 transition-colors cursor-pointer whitespace-nowrap"
+                >
+                  前往激活 License
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Action Buttons */}
           <div className="pt-1 flex flex-col sm:flex-row gap-2">
             <button
@@ -449,10 +480,13 @@ export const TaskAssistModal: React.FC<TaskAssistModalProps> = ({
             <button
               type="button"
               onClick={handleRunExecute}
-              disabled={isExecuting}
-              className="flex-1 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 whitespace-nowrap"
+              disabled={isExecuting || !isAuthorized}
+              title={!isAuthorized ? '请先配置并激活有效 License 后执行' : undefined}
+              className="flex-1 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold rounded-xl shadow-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed whitespace-nowrap"
             >
-              {isExecuting ? (
+              {!isAuthorized ? (
+                <Lock className="w-3.5 h-3.5" />
+              ) : isExecuting ? (
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
               ) : safeTask.status === '已领奖' ? (
                 <Gift className="w-3.5 h-3.5" />
@@ -460,7 +494,9 @@ export const TaskAssistModal: React.FC<TaskAssistModalProps> = ({
                 <Play className="w-3.5 h-3.5 fill-current" />
               )}
               <span>
-                {isExecuting
+                {!isAuthorized
+                  ? '需先激活 License 解锁执行'
+                  : isExecuting
                   ? '正在执行并同步积分...'
                   : isWeChatTask
                   ? '同步关注状态并立即领奖'

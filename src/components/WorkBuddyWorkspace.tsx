@@ -24,8 +24,20 @@ import {
   QrCode,
   ChevronUp,
   ChevronDown,
+  KeyRound,
+  ShieldCheck,
+  ShieldAlert,
+  ShieldOff,
+  WifiOff,
+  Lock,
 } from 'lucide-react';
-import { WorkBuddyAccount, WorkBuddyTask, ExecutionLog, SystemExecutionStats } from '../types/workbuddy';
+import {
+  WorkBuddyAccount,
+  WorkBuddyTask,
+  ExecutionLog,
+  SystemExecutionStats,
+  LicenseValidationState,
+} from '../types/workbuddy';
 import { INITIAL_ACCOUNTS } from '../utils/initialData';
 import { automationEngine } from '../utils/automationEngine';
 import {
@@ -36,6 +48,20 @@ import {
   roundPoints,
   formatAccountLabel,
 } from '../utils/workbuddyRealApi';
+import {
+  DEFAULT_APP_TYPE,
+  GRACE_RETRY_INTERVAL_MS,
+  HEARTBEAT_INTERVAL_MS,
+  OFFLINE_GRACE_MAX_MS,
+  activateOnlineLicense,
+  buildUnlicensedState,
+  clearStoredLicense,
+  computeRemainingDays,
+  getMachineLicenseContext,
+  parseExpireTimeMs,
+  verifyOfflineLicenseFile,
+  verifyStoredLicense,
+} from '../utils/licenseService';
 import { AddAccountModal } from './AddAccountModal';
 import { AccountEditModal } from './AccountEditModal';
 import {
@@ -44,6 +70,7 @@ import {
   CURRENT_APP_VERSION,
 } from './VersionUpdateModal';
 import { TaskAssistModal } from './TaskAssistModal';
+import { LicenseModal } from './LicenseModal';
 
 export interface WorkBuddyWorkspaceProps {
   onOpenPackagingGuide?: () => void;
@@ -133,6 +160,14 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   const [assistingTask, setAssistingTask] = useState<WorkBuddyTask | null>(null);
   const [executingTaskId, setExecutingTaskId] = useState<string | null>(null);
 
+  // License Authorization State (Installation/startup skippable, business ops gated)
+  const [licenseState, setLicenseState] = useState<LicenseValidationState>(() =>
+    buildUnlicensedState('', [])
+  );
+  const [isLicenseBusy, setIsLicenseBusy] = useState(false);
+  const [isLicenseModalOpen, setIsLicenseModalOpen] = useState(false);
+  const [licenseBannerDismissed, setLicenseBannerDismissed] = useState(false);
+
   // Collapsible & Draggable Log Console (Closed by default per user requirement)
   const [isLogOpen, setIsLogOpen] = useState(false);
   const [logHeight, setLogHeight] = useState(145);
@@ -177,6 +212,110 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     setIsVersionModalOpen(true);
     checkLatestVersion();
   };
+
+  // License startup validation + 24h heartbeat + non-blocking external network grace fallback
+  useEffect(() => {
+    let cancelled = false;
+
+    const initLicense = async () => {
+      const ctx = await getMachineLicenseContext();
+      if (cancelled) return;
+
+      const saved = ctx.savedLicense;
+      if (!saved || !saved.licenseKey) {
+        setLicenseState(buildUnlicensedState(ctx.macAddress, ctx.allMacs));
+        return;
+      }
+
+      // 1. Check local expiration first without waiting on external server
+      const expireMs = parseExpireTimeMs(saved.expireTime);
+      if (expireMs !== null && expireMs <= Date.now()) {
+        setLicenseState({
+          status: 'expired',
+          isAuthorized: false,
+          code: 'EXPIRED',
+          message: `授权已于 ${saved.expireTime} 到期，请续期或更换新的授权码`,
+          remainingDays: 0,
+          expireTime: saved.expireTime,
+          appType: saved.appType || DEFAULT_APP_TYPE,
+          appName: saved.appName || 'workBuddy助手',
+          macAddress: saved.macAddress || ctx.macAddress,
+          allMacs: ctx.allMacs,
+          licenseKey: saved.licenseKey,
+          lastVerifiedAt: saved.lastVerifiedAt,
+          isOfflineGrace: false,
+        });
+        return;
+      }
+
+      // 2. Optimistically allow cached authorization while external server check runs silently in background
+      const cachedDays = computeRemainingDays(saved.expireTime, saved.remainingDays);
+      const lastOkMs = saved.lastVerifiedAt ? Date.parse(saved.lastVerifiedAt) : null;
+      const withinGrace =
+        lastOkMs !== null && !Number.isNaN(lastOkMs) && Date.now() - lastOkMs <= OFFLINE_GRACE_MAX_MS;
+
+      if (withinGrace && (cachedDays === null || cachedDays > 0)) {
+        setLicenseState({
+          status: 'valid',
+          isAuthorized: true,
+          code: 'CACHED_VALID',
+          message: `已加载本地授权缓存（剩余 ${cachedDays ?? '--'} 天），正在后台联网同步最新状态...`,
+          remainingDays: cachedDays,
+          expireTime: saved.expireTime,
+          appType: saved.appType || DEFAULT_APP_TYPE,
+          appName: saved.appName || 'workBuddy助手',
+          macAddress: saved.macAddress || ctx.macAddress,
+          allMacs: ctx.allMacs,
+          licenseKey: saved.licenseKey,
+          lastVerifiedAt: saved.lastVerifiedAt,
+          isOfflineGrace: false,
+        });
+      } else {
+        setLicenseState({
+          ...buildUnlicensedState(ctx.macAddress, ctx.allMacs),
+          status: 'checking',
+          message: '正在向授权服务器校验当前 License...',
+          licenseKey: saved.licenseKey,
+          appType: saved.appType || DEFAULT_APP_TYPE,
+        });
+      }
+
+      const verified = await verifyStoredLicense();
+      if (!cancelled) {
+        setLicenseState(verified);
+      }
+    };
+
+    initLicense();
+
+    const heartbeatTimer = window.setInterval(async () => {
+      const next = await verifyStoredLicense();
+      if (!cancelled && next.licenseKey) {
+        setLicenseState(next);
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(heartbeatTimer);
+    };
+  }, []);
+
+  // Silent retry every 30 min when in weak-network grace_offline mode
+  useEffect(() => {
+    if (licenseState.status !== 'grace_offline') return;
+    let cancelled = false;
+    const retryTimer = window.setInterval(async () => {
+      const next = await verifyStoredLicense();
+      if (!cancelled) {
+        setLicenseState(next);
+      }
+    }, GRACE_RETRY_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(retryTimer);
+    };
+  }, [licenseState.status]);
 
   // Sync to localStorage
   useEffect(() => {
@@ -390,8 +529,92 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     );
   };
 
+  // License Actions & Business Gate Helper
+  const ensureLicenseAuthorized = (actionLabel: string): boolean => {
+    if (licenseState.isAuthorized) return true;
+    addLog(
+      'error',
+      currentAccount?.id || 'system',
+      `[License 校验拦截] 无法执行「${actionLabel}」：${licenseState.message}`
+    );
+    setRunningStatusText('未授权已锁定');
+    setLicenseBannerDismissed(false);
+    setIsLicenseModalOpen(true);
+    return false;
+  };
+
+  const handleActivateLicenseOnline = async (
+    licenseKey: string,
+    appType: string,
+    proxyUrl?: string
+  ) => {
+    setIsLicenseBusy(true);
+    try {
+      const res = await activateOnlineLicense({ licenseKey, appType, proxyUrl });
+      setLicenseState(res);
+      setLicenseBannerDismissed(false);
+      addLog(
+        res.isAuthorized ? 'success' : 'error',
+        currentAccount?.id || 'system',
+        `[License 激活] ${res.message} (MAC=${res.macAddress})`
+      );
+    } finally {
+      setIsLicenseBusy(false);
+    }
+  };
+
+  const handleVerifyOfflineLic = async (
+    licJson: Record<string, unknown>,
+    appType: string,
+    proxyUrl?: string
+  ) => {
+    setIsLicenseBusy(true);
+    try {
+      const res = await verifyOfflineLicenseFile({ licJson, appType, proxyUrl });
+      setLicenseState(res);
+      setLicenseBannerDismissed(false);
+      addLog(
+        res.isAuthorized ? 'success' : 'error',
+        currentAccount?.id || 'system',
+        `[License 离线验签] ${res.message} (MAC=${res.macAddress})`
+      );
+    } finally {
+      setIsLicenseBusy(false);
+    }
+  };
+
+  const handleManualVerifyLicense = async (proxyUrl?: string) => {
+    setIsLicenseBusy(true);
+    try {
+      const res = await verifyStoredLicense({ proxyUrl });
+      setLicenseState(res);
+      addLog(
+        res.isAuthorized ? (res.status === 'grace_offline' ? 'warn' : 'success') : 'error',
+        currentAccount?.id || 'system',
+        `[License 心跳校验] ${res.message}${
+          res.remainingDays !== null ? ` (剩余 ${res.remainingDays} 天)` : ''
+        }`
+      );
+    } finally {
+      setIsLicenseBusy(false);
+    }
+  };
+
+  const handleClearLicense = async () => {
+    setIsLicenseBusy(true);
+    try {
+      const cleared = await clearStoredLicense();
+      setLicenseState(cleared);
+      setLicenseBannerDismissed(false);
+      addLog('warn', currentAccount?.id || 'system', '[License] 已清除本地授权配置，核心业务已锁定');
+    } finally {
+      setIsLicenseBusy(false);
+    }
+  };
+
   // Refresh all accounts status, tasks, and live points from server
   const handleRefreshAll = async () => {
+    if (!ensureLicenseAuthorized('刷新全部')) return;
     const timeStr = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
     setStats((prev) => ({
       ...prev,
@@ -411,6 +634,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   // Toggle Cat Auto-Travel
   const toggleCatAutoTravel = () => {
     if (!currentAccount) return;
+    if (!ensureLicenseAuthorized('切换自动旅行')) return;
     const accPrefix = `[操作账号: ${formatAccountLabel(currentAccount.id, currentAccount.nickname)}]`;
     setAccounts((prev) =>
       prev.map((acc) =>
@@ -435,6 +659,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   // Refresh Cat Travel Status for current account
   const handleRefreshCatTravelStatus = async () => {
     if (!currentAccount || isRunning) return;
+    if (!ensureLicenseAuthorized('猫猫旅行刷新状态')) return;
     const accPrefix = `[操作账号: ${formatAccountLabel(currentAccount.id, currentAccount.nickname)}]`;
     addLog('info', currentAccount.id, `${accPrefix} 正在查询猫猫旅行实时状态 (/status)...`);
     try {
@@ -483,6 +708,9 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   const handleExecuteAndClaimSingleTask = async (
     task: WorkBuddyTask
   ): Promise<{ ok: boolean; message: string; points?: number }> => {
+    if (!ensureLicenseAuthorized(`执行任务「${task.name}」`)) {
+      return { ok: false, message: licenseState.message };
+    }
     if (!currentAccount?.credentials) {
       return { ok: false, message: '请先双击左侧账号配置有效的 Cookie 或 cURL 凭据' };
     }
@@ -573,6 +801,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   // Execute All Daily Tasks
   const handleExecuteAllDaily = async () => {
     if (isRunning) return;
+    if (!ensureLicenseAuthorized('一键执行全部日常')) return;
     const targetAccounts = getTargetAccountsWithPermissionCheck('一键执行全部日常');
     if (targetAccounts.length === 0) return;
 
@@ -626,6 +855,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   // Execute Streak / Daily Check-in + live API points refresh
   const handleExecuteStreak = async () => {
     if (isRunning) return;
+    if (!ensureLicenseAuthorized('签到 / 每日活跃')) return;
     const targetAccounts = getTargetAccountsWithPermissionCheck('签到 / 每日活跃');
     if (targetAccounts.length === 0) return;
 
@@ -667,6 +897,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   // Complete & Claim Tasks (prioritize claiming already-completed tasks first, then run remaining pending tasks)
   const handleClaimCompletedTasks = async () => {
     if (isRunning) return;
+    if (!ensureLicenseAuthorized('完成任务并领奖')) return;
     const targetAccounts = getTargetAccountsWithPermissionCheck('完成任务并领奖');
     if (targetAccounts.length === 0) return;
 
@@ -737,6 +968,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   // Execute Cat Travel Only
   const handleExecuteCatTravel = async () => {
     if (isRunning) return;
+    if (!ensureLicenseAuthorized('一键猫猫旅行')) return;
     const targetAccounts = getTargetAccountsWithPermissionCheck('一键猫猫旅行');
     if (targetAccounts.length === 0) return;
 
@@ -872,6 +1104,44 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={() => setIsLicenseModalOpen(true)}
+            title={licenseState.message}
+            className={`px-2.5 py-1 text-xs font-medium rounded-lg border flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap ${
+              licenseState.status === 'valid'
+                ? 'bg-emerald-950/50 hover:bg-emerald-900/60 text-emerald-300 border-emerald-500/35'
+                : licenseState.status === 'grace_offline'
+                ? 'bg-amber-950/50 hover:bg-amber-900/60 text-amber-300 border-amber-500/40'
+                : licenseState.status === 'expired' || licenseState.status === 'invalid'
+                ? 'bg-rose-950/60 hover:bg-rose-900/70 text-rose-300 border-rose-500/50 animate-pulse'
+                : 'bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border-amber-500/30'
+            }`}
+          >
+            {licenseState.status === 'valid' ? (
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+            ) : licenseState.status === 'grace_offline' ? (
+              <WifiOff className="w-3.5 h-3.5 text-amber-400" />
+            ) : licenseState.status === 'expired' || licenseState.status === 'invalid' ? (
+              <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
+            ) : (
+              <KeyRound className="w-3.5 h-3.5 text-amber-400" />
+            )}
+            <span>
+              {licenseState.status === 'valid'
+                ? `已授权 · 剩余 ${licenseState.remainingDays ?? '--'} 天`
+                : licenseState.status === 'grace_offline'
+                ? `宽限运行 · 剩余 ${licenseState.remainingDays ?? '--'} 天`
+                : licenseState.status === 'checking'
+                ? 'License 校验中...'
+                : licenseState.status === 'expired'
+                ? '授权已过期 · 点击处理'
+                : licenseState.status === 'invalid'
+                ? '授权失效 · 点击处理'
+                : '未授权 · 点击激活'}
+            </span>
+          </button>
+
+          <button
+            type="button"
             onClick={handleOpenVersionModal}
             className="relative px-2.5 py-1 bg-slate-800/90 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer"
           >
@@ -884,19 +1154,34 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
 
           <button
             type="button"
-            onClick={() => setIsAddAccountOpen(true)}
-            className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+            onClick={() => {
+              if (!ensureLicenseAuthorized('添加账号')) return;
+              setIsAddAccountOpen(true);
+            }}
+            disabled={!licenseState.isAuthorized}
+            title={!licenseState.isAuthorized ? '请先完成 License 授权校验' : undefined}
+            className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
           >
-            <UserPlus className="w-3.5 h-3.5 text-emerald-400" />
+            {!licenseState.isAuthorized ? (
+              <Lock className="w-3.5 h-3.5 text-amber-400" />
+            ) : (
+              <UserPlus className="w-3.5 h-3.5 text-emerald-400" />
+            )}
             <span>+ 添加账号</span>
           </button>
 
           <button
             type="button"
             onClick={handleRefreshAll}
-            className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer"
+            disabled={!licenseState.isAuthorized}
+            title={!licenseState.isAuthorized ? '请先完成 License 授权校验' : undefined}
+            className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-lg border border-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
           >
-            <RefreshCw className="w-3.5 h-3.5 text-indigo-400" />
+            {!licenseState.isAuthorized ? (
+              <Lock className="w-3.5 h-3.5 text-amber-400" />
+            ) : (
+              <RefreshCw className="w-3.5 h-3.5 text-indigo-400" />
+            )}
             <span>刷新全部</span>
           </button>
         </div>
@@ -937,6 +1222,79 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
           <span>{stats.lastRefreshed} 最近刷新</span>
         </div>
       </div>
+
+      {/* 2.5 License Validation Prompt / Warning Banner */}
+      {(licenseState.status === 'invalid' || licenseState.status === 'expired') && (
+        <div className="shrink-0 px-5 py-2 bg-rose-950/60 border-b border-rose-500/40 flex items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2 text-rose-200 min-w-0">
+            <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0" />
+            <span className="font-semibold text-rose-300 shrink-0">
+              {licenseState.status === 'expired' ? 'License 授权已过期：' : 'License 校验失败：'}
+            </span>
+            <span className="truncate">{licenseState.message}</span>
+            <span className="text-rose-300/80 text-[11px] shrink-0 font-mono">
+              （核心执行与领奖按钮已禁用）
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsLicenseModalOpen(true)}
+              className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded-md text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap"
+            >
+              激活 License
+            </button>
+          </div>
+        </div>
+      )}
+
+      {licenseState.status === 'unlicensed' && !licenseBannerDismissed && (
+        <div className="shrink-0 px-5 py-2 bg-amber-950/40 border-b border-amber-500/35 flex items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2 text-amber-200 min-w-0">
+            <ShieldOff className="w-4 h-4 text-amber-400 shrink-0" />
+            <span className="font-semibold text-amber-300 shrink-0">未配置 License：</span>
+            <span className="truncate">
+              安装启动可跳过，但执行日常、签到、猫猫旅行、领奖及刷新接口已禁用，激活后立即解锁。
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setIsLicenseModalOpen(true)}
+              className="px-3 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-md text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap"
+            >
+              立即配置授权
+            </button>
+            <button
+              type="button"
+              onClick={() => setLicenseBannerDismissed(true)}
+              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-md text-[11px] transition-colors cursor-pointer whitespace-nowrap"
+            >
+              暂跳过提醒
+            </button>
+          </div>
+        </div>
+      )}
+
+      {licenseState.status === 'grace_offline' && (
+        <div className="shrink-0 px-5 py-1.5 bg-amber-950/25 border-b border-amber-500/25 flex items-center justify-between gap-3 text-[11px]">
+          <div className="flex items-center gap-2 text-amber-200/90 min-w-0">
+            <WifiOff className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span className="truncate">{licenseState.message}</span>
+            <span className="font-mono text-emerald-300 shrink-0">
+              剩余可用 {licenseState.remainingDays ?? '--'} 天
+            </span>
+          </div>
+          <button
+            type="button"
+            disabled={isLicenseBusy}
+            onClick={() => handleManualVerifyLicense()}
+            className="px-2.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-amber-200 rounded border border-amber-500/30 transition-colors cursor-pointer shrink-0 disabled:opacity-50"
+          >
+            {isLicenseBusy ? '重连中...' : '重试联网校验'}
+          </button>
+        </div>
+      )}
 
       {/* 3. Main Workspace Grid: Left Sidebar + Right Workspace (Fills Remaining Height Without Outer Scroll) */}
       <div className="flex-1 min-h-0 grid grid-cols-12 overflow-hidden">
@@ -1106,10 +1464,17 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                     </div>
                   </div>
                   <button
-                    onClick={() => handleFetchLivePoints(currentAccount, true)}
-                    disabled={isSyncingPoints}
-                    title="调官方服务获取实时积分"
-                    className="p-1.5 text-slate-400 hover:text-emerald-400 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer border border-transparent hover:border-slate-700"
+                    onClick={() => {
+                      if (!ensureLicenseAuthorized('刷新实时积分')) return;
+                      handleFetchLivePoints(currentAccount, true);
+                    }}
+                    disabled={isSyncingPoints || !licenseState.isAuthorized}
+                    title={
+                      !licenseState.isAuthorized
+                        ? '请先激活有效 License 后使用'
+                        : '调官方服务获取实时积分'
+                    }
+                    className="p-1.5 text-slate-400 hover:text-emerald-400 hover:bg-slate-800 rounded-lg transition-colors cursor-pointer border border-transparent hover:border-slate-700 disabled:opacity-40 disabled:cursor-not-allowed"
                   >
                     <RefreshCw className={`w-4 h-4 ${isSyncingPoints ? 'animate-spin text-emerald-400' : ''}`} />
                   </button>
@@ -1139,20 +1504,28 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                   <div className="flex items-center gap-2">
                     <button
                       onClick={toggleCatAutoTravel}
-                      className={`px-2.5 py-1 rounded text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer ${
+                      disabled={!licenseState.isAuthorized}
+                      title={!licenseState.isAuthorized ? '请先完成 License 授权校验' : undefined}
+                      className={`px-2.5 py-1 rounded text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                         currentAccount.catTravel.autoTravel
                           ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
                           : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700'
                       }`}
                     >
+                      {!licenseState.isAuthorized && <Lock className="w-3 h-3 text-amber-400" />}
                       <span>{currentAccount.catTravel.autoTravel ? '☑ 自动旅行' : '☐ 自动旅行'}</span>
                     </button>
                     <button
                       onClick={handleRefreshCatTravelStatus}
-                      disabled={isRunning}
-                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] rounded border border-slate-700 transition-colors cursor-pointer flex items-center gap-1"
+                      disabled={isRunning || !licenseState.isAuthorized}
+                      title={!licenseState.isAuthorized ? '请先完成 License 授权校验' : undefined}
+                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] rounded border border-slate-700 transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
                     >
-                      <RefreshCw className="w-3 h-3 text-slate-400" />
+                      {!licenseState.isAuthorized ? (
+                        <Lock className="w-3 h-3 text-amber-400" />
+                      ) : (
+                        <RefreshCw className="w-3 h-3 text-slate-400" />
+                      )}
                       <span>刷新状态</span>
                     </button>
                   </div>
@@ -1257,7 +1630,19 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                           <div className="col-span-1 text-right">
                             <button
                               type="button"
-                              disabled={isRowExecuting}
+                              disabled={
+                                isRowExecuting ||
+                                (!licenseState.isAuthorized &&
+                                  task.status !== '已领奖' &&
+                                  !(isWeChatTask && task.status !== '待领奖'))
+                              }
+                              title={
+                                !licenseState.isAuthorized &&
+                                task.status !== '已领奖' &&
+                                !(isWeChatTask && task.status !== '待领奖')
+                                  ? '请先激活有效 License 后执行'
+                                  : undefined
+                              }
                               onClick={async (e) => {
                                 e.stopPropagation();
                                 setSelectedTaskId(task.id);
@@ -1265,6 +1650,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                                   setAssistingTask(task);
                                   return;
                                 }
+                                if (!ensureLicenseAuthorized(`单条执行「${task.name}」`)) return;
                                 setExecutingTaskId(task.id);
                                 try {
                                   await handleExecuteAndClaimSingleTask(task);
@@ -1272,7 +1658,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                                   setExecutingTaskId(null);
                                 }
                               }}
-                              className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer whitespace-nowrap inline-flex items-center gap-1 ${
+                              className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer whitespace-nowrap inline-flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed ${
                                 task.status === '已领奖'
                                   ? 'bg-slate-800/70 text-slate-400 hover:text-slate-200'
                                   : task.status === '待领奖'
@@ -1289,15 +1675,20 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                                 </>
                               ) : task.status === '已领奖' ? (
                                 <span>详情</span>
+                              ) : isWeChatTask && task.status !== '待领奖' ? (
+                                <>
+                                  <QrCode className="w-2.5 h-2.5" />
+                                  <span>扫码关注</span>
+                                </>
+                              ) : !licenseState.isAuthorized ? (
+                                <>
+                                  <Lock className="w-2.5 h-2.5 text-amber-400" />
+                                  <span>{task.status === '待领奖' ? '领奖锁定' : '未授权'}</span>
+                                </>
                               ) : task.status === '待领奖' ? (
                                 <>
                                   <Gift className="w-2.5 h-2.5" />
                                   <span>立即领奖</span>
-                                </>
-                              ) : isWeChatTask ? (
-                                <>
-                                  <QrCode className="w-2.5 h-2.5" />
-                                  <span>扫码关注</span>
                                 </>
                               ) : (
                                 <span>一键完成</span>
@@ -1388,39 +1779,72 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
 
             {/* Action buttons */}
             <div className="flex items-center gap-1.5 shrink-0 whitespace-nowrap">
+              {!licenseState.isAuthorized && (
+                <button
+                  type="button"
+                  onClick={() => setIsLicenseModalOpen(true)}
+                  className="px-2.5 py-1.5 bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 text-xs font-medium rounded-lg border border-rose-500/35 flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  <Lock className="w-3 h-3" />
+                  <span>需激活 License</span>
+                </button>
+              )}
+
               <button
                 onClick={handleExecuteAllDaily}
-                disabled={isRunning}
-                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs rounded-lg shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer whitespace-nowrap shrink-0"
+                disabled={isRunning || !licenseState.isAuthorized}
+                title={!licenseState.isAuthorized ? '请先完成 License 授权校验后使用' : undefined}
+                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs rounded-lg shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap shrink-0"
               >
-                {isRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" /> : <Play className="w-3.5 h-3.5 fill-current shrink-0" />}
+                {!licenseState.isAuthorized ? (
+                  <Lock className="w-3.5 h-3.5 shrink-0" />
+                ) : isRunning ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                ) : (
+                  <Play className="w-3.5 h-3.5 fill-current shrink-0" />
+                )}
                 <span>一键执行全部日常</span>
               </button>
 
               <button
                 onClick={handleExecuteStreak}
-                disabled={isRunning}
-                className="px-2.5 py-1.5 bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-medium rounded-lg shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer whitespace-nowrap shrink-0"
+                disabled={isRunning || !licenseState.isAuthorized}
+                title={!licenseState.isAuthorized ? '请先完成 License 授权校验后使用' : undefined}
+                className="px-2.5 py-1.5 bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-medium rounded-lg shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap shrink-0"
               >
-                <CalendarCheck className="w-3.5 h-3.5 shrink-0" />
+                {!licenseState.isAuthorized ? (
+                  <Lock className="w-3.5 h-3.5 shrink-0" />
+                ) : (
+                  <CalendarCheck className="w-3.5 h-3.5 shrink-0" />
+                )}
                 <span>签到 / 每日活跃</span>
               </button>
 
               <button
                 onClick={handleExecuteCatTravel}
-                disabled={isRunning}
-                className="px-2.5 py-1.5 bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-medium rounded-lg shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-40 cursor-pointer whitespace-nowrap shrink-0"
+                disabled={isRunning || !licenseState.isAuthorized}
+                title={!licenseState.isAuthorized ? '请先完成 License 授权校验后使用' : undefined}
+                className="px-2.5 py-1.5 bg-emerald-700/80 hover:bg-emerald-600 text-white text-xs font-medium rounded-lg shadow-sm flex items-center gap-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap shrink-0"
               >
-                <Compass className="w-3.5 h-3.5 shrink-0" />
+                {!licenseState.isAuthorized ? (
+                  <Lock className="w-3.5 h-3.5 shrink-0" />
+                ) : (
+                  <Compass className="w-3.5 h-3.5 shrink-0" />
+                )}
                 <span>一键猫猫旅行</span>
               </button>
 
               <button
                 onClick={handleClaimCompletedTasks}
-                disabled={isRunning}
-                className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-lg border border-slate-700 transition-colors disabled:opacity-40 cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                disabled={isRunning || !licenseState.isAuthorized}
+                title={!licenseState.isAuthorized ? '请先完成 License 授权校验后使用' : undefined}
+                className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs rounded-lg border border-slate-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0"
               >
-                <Gift className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                {!licenseState.isAuthorized ? (
+                  <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                ) : (
+                  <Gift className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                )}
                 <span>完成任务并领奖</span>
               </button>
 
@@ -1606,6 +2030,21 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
         task={assistingTask}
         onClose={() => setAssistingTask(null)}
         onExecuteAndClaim={handleExecuteAndClaimSingleTask}
+        isAuthorized={licenseState.isAuthorized}
+        licenseMessage={licenseState.message}
+        onOpenLicenseModal={() => setIsLicenseModalOpen(true)}
+      />
+
+      {/* License Authorization Modal */}
+      <LicenseModal
+        isOpen={isLicenseModalOpen}
+        onClose={() => setIsLicenseModalOpen(false)}
+        licenseState={licenseState}
+        isBusy={isLicenseBusy}
+        onActivateOnline={handleActivateLicenseOnline}
+        onVerifyOfflineFile={handleVerifyOfflineLic}
+        onManualVerify={handleManualVerifyLicense}
+        onClearLicense={handleClearLicense}
       />
 
       {/* Delete Selected Accounts Confirmation Modal */}

@@ -9,7 +9,7 @@ on:
       version:
         description: 'Release Version'
         required: false
-        default: 'v1.3.2'
+        default: 'v1.0.0'
 
 permissions:
   contents: write
@@ -83,7 +83,7 @@ jobs:
             release/*.zip
 
   publish-release:
-    name: Publish GitHub Release (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.2' }})
+    name: Publish GitHub Release (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.0.0' }})
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
@@ -110,8 +110,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.2' }}
-          name: WorkBuddy 自动化工具 ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.2' }} 正式发布
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.0.0' }}
+          name: WorkBuddy 自动化工具 ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.0.0' }} 正式发布
           files: |
             dist-release/*.exe
             dist-release/*.dmg
@@ -119,20 +119,18 @@ jobs:
           draft: false
           prerelease: false
           body: |
-            ### 🌟 WorkBuddy 自动化工具 ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.2' }} 正式发布
+            ### 🌟 WorkBuddy 自动化工具 ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.0.0' }} 正式发布
 
-            本版本为 **WorkBuddy 自动化工具 v1.3.2**，重点修复 Cookie 鉴权 401 错配导致的专家/技能/资料库任务失败问题，强化多账号权限控制与完全隔离，并优化实时积分刷新与日志体验：
+            本版本为 **WorkBuddy 自动化工具 v1.0.0** 首个正式发行版本，集成 License 软件授权校验、多账号全链路任务自动执行与自动领奖、多源在线流式升级及跨平台桌面端打包能力：
 
-            #### 🚀 核心升级内容 (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.2' }})
-            1. **彻底修复 Cookie 鉴权 401 错配与剩余任务全链路打通**：
-               - 修复 Cookie 账号请求误带桌面端平台头导致的 401 Unauthorized 与全局共享 Cookie Jar 串号问题，改为无状态单账号独立认证；
-               - 优化官方专家模糊检索（支持跳转链接 ID 提取、关键词归一化与 `internalExpert.json` 兜底），补齐「无畏契约拼豆专家」「商家宣传页与海报设计师」「腾讯轻量云」召回链路；
-               - 补全「尝鲜热门技能」（SkillHub 查询 + `/v2/user-asset/skill/install` 安装 + 技能使用埋点）与「体验资料库」（NetDrive/TDrive + `asset_cloud_list_show` / `asset_cloud_sync` 埋点）真实协议。
-            2. **严格权限控制与全链路账号隔离**：
-               - 默认执行范围严格锁定「仅已选账号」，勾选操作自动启用权限隔离，未勾选账号绝对不会被连带执行；
-               - 账号之间的任务状态、运行日志、实时积分与认证缓存完全隔离，互不串号。
-            3. **日志可观测性增强与一键复制**：
-               - 每条日志均在前缀清晰标明 `[操作账号: 昵称 (短ID)]`，支持切换「仅当前账号 / 全部日志」视图，并在日志栏新增「复制日志」一键复制按钮；
-               - 修复任务领奖后顶部实时积分未刷新与浮点精度尾巴（如 `.40000002`）展示问题。
+            #### 🚀 核心功能亮点 (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.0.0' }})
+            1. **License 软件授权与弱网不断流机制**：
+               - 安装与启动支持先跳过预览，核心自动化业务执行与账号管理受 License 授权校验保护，激活成功后实时展示可用剩余天数；
+               - 支持在线授权码激活绑定与离线 `.lic` 证书验签，内置系统代理自适应、IPv4 优先与 35 秒长超时多通道探测，外网波动时自动启用本地宽限授权不中断使用。
+            2. **成长中心任务全链路自动化与自动领奖**：
+               - 支持每日签到活跃、猫猫旅行自动启程与归来领奖、官方专家召回对话、模板/自动化/技能/资料库等任务真实执行并自动同步官方实时积分；
+               - 支持无状态单账号认证与严格的多账号权限隔离（仅执行已勾选账号，日志与积分按账号独立隔离，支持一键复制日志）。
+            3. **应用内免浏览器流式更新**：
+               - 点击版本升级自动识别当前系统环境（Windows x64 / macOS arm64 / macOS x64）并检测最新版本，内置多源加速节点流式下载与自动拉起安装。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
