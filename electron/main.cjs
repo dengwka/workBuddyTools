@@ -1087,6 +1087,33 @@ ipcMain.handle('workbuddy:license-request', async (_event, { endpoint, body, pro
   };
 });
 
+ipcMain.handle('workbuddy:window-minimize', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.minimize();
+  }
+});
+
+ipcMain.handle('workbuddy:window-toggle-maximize', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  if (mainWindow.isMaximized()) {
+    mainWindow.unmaximize();
+  } else {
+    mainWindow.maximize();
+  }
+  return mainWindow.isMaximized();
+});
+
+ipcMain.handle('workbuddy:window-is-maximized', () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  return mainWindow.isMaximized();
+});
+
+ipcMain.handle('workbuddy:window-close', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.close();
+  }
+});
+
 function createWindow() {
   if (process.platform !== 'darwin') {
     Menu.setApplicationMenu(null);
@@ -1099,9 +1126,11 @@ function createWindow() {
     height: 780,
     minWidth: 1020,
     minHeight: 660,
-    frame: true,
+    frame: false,
     autoHideMenuBar: true,
-    titleBarStyle: 'default',
+    resizable: true,
+    maximizable: true,
+    minimizable: true,
     title: 'WorkBuddy 自动化工具 v1.0.0',
     icon: path.join(__dirname, iconFile),
     backgroundColor: '#020617',
@@ -1113,6 +1142,18 @@ function createWindow() {
   });
 
   mainWindow.setMenuBarVisibility(false);
+
+  mainWindow.on('maximize', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('workbuddy:window-maximized-changed', true);
+    }
+  });
+
+  mainWindow.on('unmaximize', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('workbuddy:window-maximized-changed', false);
+    }
+  });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);

@@ -15,6 +15,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getLicenseInfo: () => ipcRenderer.invoke('workbuddy:license-get-info'),
   saveLicenseConfig: (payload) => ipcRenderer.invoke('workbuddy:license-save', payload),
   requestLicenseApi: (payload) => ipcRenderer.invoke('workbuddy:license-request', payload),
+  windowMinimize: () => ipcRenderer.invoke('workbuddy:window-minimize'),
+  windowToggleMaximize: () => ipcRenderer.invoke('workbuddy:window-toggle-maximize'),
+  windowIsMaximized: () => ipcRenderer.invoke('workbuddy:window-is-maximized'),
+  windowClose: () => ipcRenderer.invoke('workbuddy:window-close'),
+  onWindowMaximizedChanged: (callback) => {
+    const listener = (_event, isMax) => callback(Boolean(isMax));
+    ipcRenderer.on('workbuddy:window-maximized-changed', listener);
+    return () => ipcRenderer.removeListener('workbuddy:window-maximized-changed', listener);
+  },
   onUpdateProgress: (callback) => {
     const listener = (_event, data) => callback(data);
     ipcRenderer.on('workbuddy:update-progress', listener);

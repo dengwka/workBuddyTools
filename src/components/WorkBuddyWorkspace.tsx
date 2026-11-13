@@ -30,6 +30,10 @@ import {
   ShieldOff,
   WifiOff,
   Lock,
+  Minus,
+  Maximize2,
+  Minimize2,
+  X,
 } from 'lucide-react';
 import {
   WorkBuddyAccount,
@@ -167,6 +171,52 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   const [isLicenseBusy, setIsLicenseBusy] = useState(false);
   const [isLicenseModalOpen, setIsLicenseModalOpen] = useState(false);
   const [licenseBannerDismissed, setLicenseBannerDismissed] = useState(false);
+
+  // Electron frameless window state & controls
+  const electronWindowApi =
+    typeof window !== 'undefined'
+      ? (
+          window as unknown as {
+            electronAPI?: {
+              isElectron?: boolean;
+              windowMinimize?: () => Promise<void>;
+              windowToggleMaximize?: () => Promise<boolean>;
+              windowIsMaximized?: () => Promise<boolean>;
+              windowClose?: () => Promise<void>;
+              onWindowMaximizedChanged?: (cb: (isMax: boolean) => void) => () => void;
+            };
+          }
+        ).electronAPI
+      : undefined;
+  const isElectronApp = Boolean(electronWindowApi?.isElectron);
+  const [isWindowMaximized, setIsWindowMaximized] = useState(false);
+
+  useEffect(() => {
+    if (!electronWindowApi?.isElectron) return;
+    let unsub: (() => void) | undefined;
+    electronWindowApi.windowIsMaximized?.().then((v) => setIsWindowMaximized(Boolean(v))).catch(() => {});
+    if (electronWindowApi.onWindowMaximizedChanged) {
+      unsub = electronWindowApi.onWindowMaximizedChanged((v) => setIsWindowMaximized(Boolean(v)));
+    }
+    return () => {
+      unsub?.();
+    };
+  }, [electronWindowApi]);
+
+  const handleWindowMinimize = () => {
+    electronWindowApi?.windowMinimize?.();
+  };
+
+  const handleWindowToggleMaximize = async () => {
+    const next = await electronWindowApi?.windowToggleMaximize?.();
+    if (typeof next === 'boolean') {
+      setIsWindowMaximized(next);
+    }
+  };
+
+  const handleWindowClose = () => {
+    electronWindowApi?.windowClose?.();
+  };
 
   // Collapsible & Draggable Log Console (Closed by default per user requirement)
   const [isLogOpen, setIsLogOpen] = useState(false);
@@ -1058,9 +1108,13 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   };
 
   return (
-    <div className="h-full w-full bg-slate-900 flex flex-col font-sans select-none overflow-hidden">
-      {/* 1. Window Title Bar & Header (Fixed Top) */}
-      <div className="shrink-0 flex items-center justify-between px-4 py-2.5 bg-slate-950/95 border-b border-slate-800">
+    <div
+      className={`h-full w-full bg-slate-900 flex flex-col font-sans select-none overflow-hidden ${
+        isElectronApp && !isWindowMaximized ? 'border border-slate-800/90' : ''
+      }`}
+    >
+      {/* 1. Window Title Bar & Header (Fixed Top, Frameless Drag Region in Desktop Mode) */}
+      <div className="shrink-0 flex items-center justify-between px-4 py-2 bg-slate-950/95 border-b border-slate-800 app-drag-region">
         <div className="flex items-center gap-3">
           {/* WorkBuddy Custom App Icon */}
           <div className="w-6 h-6 rounded-md bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-white shadow-sm overflow-hidden shrink-0">
@@ -1084,7 +1138,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
               type="button"
               onClick={handleOpenVersionModal}
               title="点击自动检测版本更新并查看版本管理"
-              className="relative inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-[11px] font-mono text-slate-300 transition-colors cursor-pointer"
+              className="app-no-drag relative inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-900 hover:bg-slate-800 border border-slate-700/80 text-[11px] font-mono text-slate-300 transition-colors cursor-pointer"
             >
               <span>v{localVersion}</span>
               {hasUpdate ? (
@@ -1101,7 +1155,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
         </div>
 
         {/* Header Right Actions */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 app-no-drag">
           <button
             type="button"
             onClick={() => setIsLicenseModalOpen(true)}
@@ -1184,6 +1238,39 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
             )}
             <span>刷新全部</span>
           </button>
+
+          {isElectronApp && (
+            <div className="flex items-center gap-1 pl-2 ml-1 border-l border-slate-800">
+              <button
+                type="button"
+                onClick={handleWindowMinimize}
+                title="最小化"
+                className="w-7 h-7 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <Minus className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={handleWindowToggleMaximize}
+                title={isWindowMaximized ? '向下还原' : '最大化'}
+                className="w-7 h-7 rounded-md flex items-center justify-center text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                {isWindowMaximized ? (
+                  <Minimize2 className="w-3.5 h-3.5" />
+                ) : (
+                  <Maximize2 className="w-3.5 h-3.5" />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={handleWindowClose}
+                title="关闭"
+                className="w-7 h-7 rounded-md flex items-center justify-center text-slate-400 hover:text-white hover:bg-rose-600 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
