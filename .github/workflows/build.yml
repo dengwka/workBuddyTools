@@ -38,9 +38,7 @@ jobs:
 
       - name: Package Windows (.exe)
         run: |
-          npx electron-builder --win --x64
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          npx electron-builder --win --x64 --publish never
 
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
@@ -71,9 +69,7 @@ jobs:
 
       - name: Package macOS Intel (x64) and Apple Silicon (arm64)
         run: |
-          npx electron-builder --mac --x64 --arm64
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          npx electron-builder --mac --x64 --arm64 --publish never
 
       - name: Upload macOS Artifacts
         uses: actions/upload-artifact@v4

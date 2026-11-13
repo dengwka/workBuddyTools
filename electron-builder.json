@@ -9,8 +9,8 @@
     "electron/**/*",
     "package.json"
   ],
-  "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
   "win": {
+    "artifactName": "workbuddyTools-${version}-win-${arch}-${target}.${ext}",
     "target": [
       {
         "target": "nsis",
@@ -27,9 +27,14 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "WorkBuddy 账号日常工具"
+    "shortcutName": "WorkBuddy 账号日常工具",
+    "artifactName": "workbuddyTools-${version}-win-${arch}-setup.${ext}"
+  },
+  "portable": {
+    "artifactName": "workbuddyTools-${version}-win-${arch}-portable.${ext}"
   },
   "mac": {
+    "artifactName": "workbuddyTools-${version}-mac-${arch}.${ext}",
     "target": [
       {
         "target": "dmg",
