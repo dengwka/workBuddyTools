@@ -6,7 +6,6 @@ import {
   Sparkles,
   CheckCircle2,
   Cpu,
-  ExternalLink,
   ArrowUpCircle,
   Package,
   ShieldCheck,
@@ -49,6 +48,9 @@ export interface UpdateProgressData {
   speedText: string;
   remainingText: string;
   nodeName: string;
+  stage?: 'downloading' | 'installing' | 'done' | 'error';
+  autoInstalled?: boolean;
+  error?: string;
 }
 
 export function compareSemver(v1: string, v2: string): number {
@@ -171,51 +173,43 @@ export async function detectSystemEnvironment(): Promise<DetectedSystemEnv> {
 export function findMatchingAsset(
   release: GitHubReleaseInfo | null,
   env: DetectedSystemEnv
-): { primaryUrl: string; primaryName: string; primarySizeMb?: string } {
-  const versionClean = (release?.tag_name || `v${CURRENT_APP_VERSION}`).replace(/^v/i, '');
-  const tag = release?.tag_name || `v${CURRENT_APP_VERSION}`;
+): { primaryUrl: string; primaryName: string; primarySizeMb?: string; hasAsset: boolean } {
   const assets = release?.assets || [];
-
   let matchedAsset: GitHubReleaseAsset | undefined;
 
   if (env.envType === 'win-x64') {
     matchedAsset =
       assets.find((a) => a.name.toLowerCase().includes('setup') && a.name.endsWith('.exe')) ||
       assets.find((a) => a.name.endsWith('.exe'));
-    const fallbackName = `workbuddyTools-Setup-${versionClean}.exe`;
-    return {
-      primaryUrl:
-        matchedAsset?.browser_download_url ||
-        `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${fallbackName}`,
-      primaryName: matchedAsset?.name || fallbackName,
-      primarySizeMb: matchedAsset ? `${(matchedAsset.size / 1024 / 1024).toFixed(1)} MB` : undefined,
-    };
-  }
-
-  if (env.envType === 'mac-arm64') {
+  } else if (env.envType === 'mac-arm64') {
     matchedAsset =
       assets.find((a) => a.name.endsWith('.dmg') && a.name.includes('arm64')) ||
       assets.find((a) => a.name.endsWith('.zip') && a.name.includes('arm64'));
-    const fallbackName = `workbuddyTools-${versionClean}-arm64.dmg`;
+  } else {
+    matchedAsset =
+      assets.find((a) => a.name.endsWith('.dmg') && a.name.includes('x64')) ||
+      assets.find((a) => a.name.endsWith('.zip') && a.name.includes('x64'));
+  }
+
+  if (!matchedAsset) {
     return {
-      primaryUrl:
-        matchedAsset?.browser_download_url ||
-        `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${fallbackName}`,
-      primaryName: matchedAsset?.name || fallbackName,
-      primarySizeMb: matchedAsset ? `${(matchedAsset.size / 1024 / 1024).toFixed(1)} MB` : undefined,
+      primaryUrl: '',
+      primaryName:
+        env.envType === 'win-x64'
+          ? 'Windows 安装包 (.exe)'
+          : env.envType === 'mac-arm64'
+          ? 'macOS arm64 安装包 (.dmg)'
+          : 'macOS x64 安装包 (.dmg)',
+      hasAsset: false,
     };
   }
 
-  matchedAsset =
-    assets.find((a) => a.name.endsWith('.dmg') && a.name.includes('x64')) ||
-    assets.find((a) => a.name.endsWith('.zip') && a.name.includes('x64'));
-  const fallbackName = `workbuddyTools-${versionClean}-x64.dmg`;
   return {
-    primaryUrl:
-      matchedAsset?.browser_download_url ||
-      `https://github.com/${GITHUB_REPO}/releases/download/${tag}/${fallbackName}`,
-    primaryName: matchedAsset?.name || fallbackName,
-    primarySizeMb: matchedAsset ? `${(matchedAsset.size / 1024 / 1024).toFixed(1)} MB` : undefined,
+    primaryUrl: matchedAsset.browser_download_url,
+    primaryName: matchedAsset.name,
+    primarySizeMb:
+      matchedAsset.size > 0 ? `${(matchedAsset.size / 1024 / 1024).toFixed(1)} MB` : undefined,
+    hasAsset: true,
   };
 }
 
@@ -256,11 +250,34 @@ export function useVersionUpdater(localVersion: string = CURRENT_APP_VERSION) {
   const checkLatestVersion = useCallback(async () => {
     setIsChecking(true);
     try {
-      const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-        headers: { Accept: 'application/vnd.github+json' },
-      });
-      if (res.ok) {
-        const data: GitHubReleaseInfo = await res.json();
+      const winAny = window as unknown as {
+        electronAPI?: {
+          checkLatestRelease?: () => Promise<GitHubReleaseInfo | null>;
+        };
+      };
+
+      let data: GitHubReleaseInfo | null = null;
+      if (typeof winAny.electronAPI?.checkLatestRelease === 'function') {
+        data = await winAny.electronAPI.checkLatestRelease().catch(() => null);
+      }
+
+      if (!data) {
+        const backendRes = await fetch('/api/update/latest').catch(() => null);
+        if (backendRes?.ok) {
+          data = await backendRes.json().catch(() => null);
+        }
+      }
+
+      if (!data) {
+        const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+          headers: { Accept: 'application/vnd.github+json' },
+        }).catch(() => null);
+        if (res?.ok) {
+          data = await res.json().catch(() => null);
+        }
+      }
+
+      if (data && data.tag_name) {
         setRelease(data);
         const isNewer = compareSemver(data.tag_name, localVersion) > 0;
         setHasUpdate(isNewer);
@@ -361,17 +378,34 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
 
   const handleSmartDownload = async () => {
     setStatusMessage(null);
+
+    if (!matched.hasAsset || !matched.primaryUrl) {
+      setStatusMessage({
+        ok: false,
+        text: '尚未获取到对应环境安装包地址，正在为您重新拉取最新版本列表，请稍后重试。',
+      });
+      onCheckUpdate();
+      return;
+    }
+
     const winAny = window as unknown as {
       electronAPI?: {
         isElectron?: boolean;
         downloadAndInstallUpdate?: (payload: {
           downloadUrl: string;
+          fileName: string;
           mirrorMode: string;
-        }) => Promise<{ success: boolean; filePath?: string; nodeName?: string; error?: string }>;
+        }) => Promise<{
+          success: boolean;
+          filePath?: string;
+          nodeName?: string;
+          autoInstalled?: boolean;
+          error?: string;
+        }>;
       };
     };
 
-    // In Electron Desktop App: use kuaixuntong's Node.js stream download + shell.openPath (no browser Zone.Identifier!)
+    // 1. Electron Desktop App: Node.js stream download + real-time progress + auto-launch OS installer (zero browser!)
     if (winAny.electronAPI?.isElectron && typeof winAny.electronAPI.downloadAndInstallUpdate === 'function') {
       setIsDownloading(true);
       setProgress({
@@ -381,44 +415,122 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
         speedText: '正在连接高速节点...',
         remainingText: '',
         nodeName: '智能加速引擎',
+        stage: 'downloading',
       });
       try {
         const res = await winAny.electronAPI.downloadAndInstallUpdate({
           downloadUrl: matched.primaryUrl,
+          fileName: matched.primaryName,
           mirrorMode,
         });
         if (res.success) {
+          setProgress((prev) => ({
+            percent: 100,
+            receivedMb: prev?.receivedMb || matched.primarySizeMb?.replace(' MB', '') || '100%',
+            totalMb: prev?.totalMb || matched.primarySizeMb?.replace(' MB', '') || '100%',
+            speedText: '已启动安装',
+            remainingText: '',
+            nodeName: res.nodeName || prev?.nodeName || '智能加速引擎',
+            stage: 'done',
+          }));
           setStatusMessage({
             ok: true,
-            text: `安装包已通过 [${res.nodeName}] 下载完成并自动拉起安装向导！（无浏览器联网标记，免拦截直装）`,
+            text: `安装包已通过 [${res.nodeName}] 下载并校验完成，已自动触发系统安装程序！（未打开浏览器）`,
           });
         } else {
-          triggerExternalDownload(matched.primaryUrl);
           setStatusMessage({
-            ok: true,
-            text: `已切换至系统浏览器下载：${matched.primaryName}`,
+            ok: false,
+            text: `自动下载未完成：${res.error || '网络连接失败'}，请切换上方下载加速源后重试`,
           });
         }
-      } catch {
-        triggerExternalDownload(matched.primaryUrl);
+      } catch (err: unknown) {
+        setStatusMessage({
+          ok: false,
+          text: `自动下载异常：${err instanceof Error ? err.message : '网络超时'}，请切换下载加速源后重试`,
+        });
       } finally {
         setIsDownloading(false);
       }
       return;
     }
 
-    // In Web Browser: use selected CDN mirror or direct GitHub URL
-    let finalUrl = matched.primaryUrl;
-    if (mirrorMode === 'ghfast' || mirrorMode === 'auto') {
-      finalUrl = `https://ghfast.top/${matched.primaryUrl}`;
-    } else if (mirrorMode === 'ghproxy') {
-      finalUrl = `https://gh-proxy.com/${matched.primaryUrl}`;
-    }
-    triggerExternalDownload(finalUrl);
-    setStatusMessage({
-      ok: true,
-      text: `已开始自动下载对应系统安装包：${matched.primaryName}`,
+    // 2. Local Web Server Mode (server.ts): backend stream download + SSE progress + auto-launch OS installer (zero browser!)
+    setIsDownloading(true);
+    setProgress({
+      percent: 0,
+      receivedMb: '0.0',
+      totalMb: '0.0',
+      speedText: '正在连接高速节点...',
+      remainingText: '',
+      nodeName: '智能加速引擎',
+      stage: 'downloading',
     });
+
+    try {
+      const startRes = await fetch('/api/update/download-and-install', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          downloadUrl: matched.primaryUrl,
+          fileName: matched.primaryName,
+          mirrorMode,
+        }),
+      });
+      const startData = await startRes.json().catch(() => ({}));
+      if (!startRes.ok || !startData.jobId) {
+        throw new Error(startData.error || '无法启动后端流式下载');
+      }
+
+      const jobId = String(startData.jobId);
+
+      await new Promise<void>((resolve, reject) => {
+        const es = new EventSource(`/api/update/progress?jobId=${encodeURIComponent(jobId)}`);
+        es.onmessage = (evt) => {
+          try {
+            const data: UpdateProgressData = JSON.parse(evt.data);
+            setProgress(data);
+            if (data.stage === 'done') {
+              es.close();
+              if (data.autoInstalled) {
+                setStatusMessage({
+                  ok: true,
+                  text: `安装包 (${matched.primaryName}) 下载完成，已自动在本机触发安装程序！（未打开浏览器）`,
+                });
+              } else {
+                // Headless server fallback: download verified file stream directly without opening external GitHub tab
+                const link = document.createElement('a');
+                link.href = `/api/update/file?jobId=${encodeURIComponent(jobId)}`;
+                link.download = matched.primaryName;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                setStatusMessage({
+                  ok: true,
+                  text: `安装包 (${matched.primaryName}) 已完成校验与流式下载并开始保存（当前服务端为无界面容器，已直接保存安装包供双击安装）`,
+                });
+              }
+              resolve();
+            } else if (data.stage === 'error') {
+              es.close();
+              reject(new Error(data.error || '下载失败'));
+            }
+          } catch {
+            // ignore parse error
+          }
+        };
+        es.onerror = () => {
+          es.close();
+          reject(new Error('与更新服务的进度连接中断'));
+        };
+      });
+    } catch (err: unknown) {
+      setStatusMessage({
+        ok: false,
+        text: `自动更新失败：${err instanceof Error ? err.message : '网络错误'}，请切换下载加速源重试`,
+      });
+    } finally {
+      setIsDownloading(false);
+    }
   };
 
   return (
@@ -558,39 +670,28 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
             </div>
           </div>
 
-          {/* Stream Download Progress Bar */}
-          {isDownloading && progress && (
-            <div className="p-3 bg-slate-950 border border-emerald-500/30 rounded-xl space-y-2">
-              <div className="flex items-center justify-between text-[11px] font-mono">
-                <span className="text-emerald-400">{progress.nodeName}</span>
-                <span className="text-slate-300">
-                  {progress.percent}% ({progress.receivedMb}/{progress.totalMb} MB) · {progress.speedText}{' '}
-                  {progress.remainingText}
-                </span>
-              </div>
-              <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-emerald-500 transition-all duration-200"
-                  style={{ width: `${Math.max(2, progress.percent)}%` }}
-                />
-              </div>
-            </div>
-          )}
-
           {/* Status Message */}
           {statusMessage && (
-            <div className="p-2.5 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <div
+              className={`p-2.5 rounded-xl border flex items-center gap-2 ${
+                statusMessage.ok
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                  : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+              }`}
+            >
+              <CheckCircle2
+                className={`w-4 h-4 shrink-0 ${statusMessage.ok ? 'text-emerald-400' : 'text-rose-400'}`}
+              />
               <span className="text-[11px] leading-relaxed">{statusMessage.text}</span>
             </div>
           )}
 
           {/* Primary Download & Install Button */}
-          <div className="space-y-2 pt-1">
+          <div className="space-y-2.5 pt-1">
             <button
               type="button"
               onClick={handleSmartDownload}
-              disabled={isDownloading}
+              disabled={isDownloading || isChecking}
               className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-xl shadow-lg flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-50"
             >
               {isDownloading ? (
@@ -600,31 +701,58 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
               )}
               <span>
                 {isDownloading
-                  ? '正在流式下载安装包并准备自动启动...'
-                  : `${hasUpdate ? '立即更新并自动下载安装包' : '下载当前系统安装包'} (${matched.primaryName}${
+                  ? progress?.stage === 'installing'
+                    ? '下载完成，正在自动触发安装...'
+                    : '正在应用内自动下载安装包...'
+                  : !matched.hasAsset
+                  ? isChecking
+                    ? '正在获取安装包信息...'
+                    : '重新获取对应环境安装包'
+                  : `${hasUpdate ? '立即更新并自动下载安装' : '下载并自动安装当前环境包'} (${matched.primaryName}${
                       matched.primarySizeMb ? ` · ${matched.primarySizeMb}` : ''
                     })`}
               </span>
             </button>
 
+            {/* In-App Download & Auto-Install Progress Bar (Displayed right below update button!) */}
+            {progress && (isDownloading || progress.stage === 'done' || progress.stage === 'installing') && (
+              <div className="p-3 bg-slate-950 border border-emerald-500/30 rounded-xl space-y-2">
+                <div className="flex items-center justify-between text-[11px] font-mono gap-2">
+                  <span className="text-emerald-400 truncate">
+                    {progress.stage === 'installing'
+                      ? '⚡ 正在自动启动安装程序...'
+                      : progress.stage === 'done'
+                      ? '✅ 已完成下载并触发安装'
+                      : progress.nodeName}
+                  </span>
+                  <span className="text-slate-300 shrink-0">
+                    {progress.percent}% ({progress.receivedMb}/{progress.totalMb} MB) · {progress.speedText}{' '}
+                    {progress.remainingText}
+                  </span>
+                </div>
+                <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-emerald-500 transition-all duration-200"
+                    style={{ width: `${Math.max(2, progress.percent)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
             <div className="flex items-center justify-between px-1 text-[11px] text-slate-400">
+              <span className="text-slate-500">
+                {matched.hasAsset ? `目标文件：${matched.primaryName}` : '等待获取 GitHub Release 真实资产列表'}
+              </span>
+
               <button
                 type="button"
-                onClick={() => triggerExternalDownload(matched.primaryUrl)}
-                className="text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
+                onClick={onCheckUpdate}
+                disabled={isChecking || isDownloading}
+                className="text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-1 cursor-pointer disabled:opacity-50"
               >
-                通过浏览器直接下载 ({matched.primaryName})
+                <RefreshCw className={`w-3 h-3 ${isChecking ? 'animate-spin' : ''}`} />
+                <span>刷新版本与资产</span>
               </button>
-
-              <a
-                href={`https://github.com/${GITHUB_REPO}/releases`}
-                target="_blank"
-                rel="noreferrer"
-                className="text-slate-400 hover:text-slate-200 inline-flex items-center gap-1"
-              >
-                <span>查看全部 GitHub Releases</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
             </div>
           </div>
         </div>

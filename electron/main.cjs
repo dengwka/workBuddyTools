@@ -89,7 +89,100 @@ function getAcceleratedDownloadUrls(rawUrl, customNode = 'auto') {
   ];
 }
 
-async function executeStreamDownload(targetUrl, nodeName, emitProgress) {
+const GITHUB_REPO = 'dengwka/workBuddyTools';
+
+async function fetchLatestReleaseInfo() {
+  try {
+    const apiRes = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'WorkBuddyTools-Updater/1.2.1',
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (apiRes.ok) {
+      const data = await apiRes.json();
+      if (data && data.tag_name && Array.isArray(data.assets) && data.assets.length > 0) {
+        return data;
+      }
+    }
+  } catch {
+    // fallback to HTML/mirror release parser below
+  }
+
+  const releasePageBases = [
+    `https://github.com/${GITHUB_REPO}/releases/latest`,
+    `https://ghfast.top/https://github.com/${GITHUB_REPO}/releases/latest`,
+    `https://gh-proxy.com/https://github.com/${GITHUB_REPO}/releases/latest`,
+  ];
+
+  for (const pageUrl of releasePageBases) {
+    try {
+      const res = await fetch(pageUrl, {
+        redirect: 'follow',
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.2.1' },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) continue;
+      const html = await res.text();
+      const tagMatch =
+        res.url.match(/\/releases\/tag\/([^/?#]+)/) ||
+        html.match(/\/dengwka\/workBuddyTools\/releases\/tag\/([^"/?#<]+)/);
+      const tagName = tagMatch ? decodeURIComponent(tagMatch[1]) : '';
+      if (!tagName) continue;
+
+      const expandedUrl = pageUrl.startsWith('https://ghfast.top/')
+        ? `https://ghfast.top/https://github.com/${GITHUB_REPO}/releases/expanded_assets/${tagName}`
+        : pageUrl.startsWith('https://gh-proxy.com/')
+        ? `https://gh-proxy.com/https://github.com/${GITHUB_REPO}/releases/expanded_assets/${tagName}`
+        : `https://github.com/${GITHUB_REPO}/releases/expanded_assets/${tagName}`;
+
+      const expRes = await fetch(expandedUrl, {
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.2.1' },
+        signal: AbortSignal.timeout(10000),
+      });
+      const expHtml = expRes.ok ? await expRes.text() : html;
+      const assetRegex = new RegExp(`href="([^"]*/${GITHUB_REPO}/releases/download/[^"]+)"`, 'gi');
+      const assets = [];
+      const seen = new Set();
+      let m;
+      while ((m = assetRegex.exec(expHtml)) !== null) {
+        const rawHref = m[1];
+        const idx = rawHref.indexOf(`/${GITHUB_REPO}/releases/download/`);
+        const cleanPath = idx >= 0 ? rawHref.slice(idx) : rawHref;
+        const downloadUrl = `https://github.com${cleanPath}`;
+        const name = decodeURIComponent(cleanPath.split('/').pop() || '');
+        if (name && !seen.has(name)) {
+          seen.add(name);
+          assets.push({
+            id: assets.length + 1,
+            name,
+            size: 0,
+            browser_download_url: downloadUrl,
+            updated_at: new Date().toISOString(),
+          });
+        }
+      }
+
+      if (assets.length > 0) {
+        return {
+          tag_name: tagName,
+          name: `WorkBuddy 账号日常工具 ${tagName}`,
+          body: '',
+          published_at: new Date().toISOString(),
+          html_url: `https://github.com/${GITHUB_REPO}/releases/tag/${tagName}`,
+          assets,
+        };
+      }
+    } catch {
+      // try next base
+    }
+  }
+
+  return null;
+}
+
+async function executeStreamDownload(targetUrl, originalFileName, nodeName, emitProgress) {
   const controller = new AbortController();
   const connectTimer = setTimeout(() => controller.abort(), 15000);
 
@@ -97,6 +190,7 @@ async function executeStreamDownload(targetUrl, nodeName, emitProgress) {
   try {
     res = await fetch(targetUrl, {
       redirect: 'follow',
+      headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.2.1' },
       signal: controller.signal,
     });
   } finally {
@@ -107,23 +201,40 @@ async function executeStreamDownload(targetUrl, nodeName, emitProgress) {
     throw new Error(`HTTP ${res.status}`);
   }
 
-  const totalBytes = parseInt(res.headers.get('content-length') || '0', 10);
-  const isWin = process.platform === 'win32';
-  const isMac = process.platform === 'darwin';
-  const ext = isWin ? '.exe' : isMac ? '.dmg' : '';
-  const fileName = `workbuddyTools-Setup-${Date.now()}${ext}`;
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+  if (contentType.includes('text/html')) {
+    throw new Error('镜像节点返回了 HTML 错误页而非安装包');
+  }
+
+  const contentEncoding = (res.headers.get('content-encoding') || '').toLowerCase();
+  const rawContentLen = parseInt(res.headers.get('content-length') || '0', 10);
+  const totalBytes = !contentEncoding || contentEncoding === 'identity' ? rawContentLen : 0;
+
+  const urlBasename = (() => {
+    try {
+      const p = new URL(targetUrl).pathname;
+      return decodeURIComponent(p.split('/').pop() || '');
+    } catch {
+      return '';
+    }
+  })();
+
+  const safeName = (originalFileName || urlBasename || `workbuddyTools-update-${Date.now()}.exe`).replace(
+    /[^a-zA-Z0-9._-]/g,
+    '_'
+  );
   const tempDir = app.getPath('temp');
-  const destPath = path.join(tempDir, fileName);
+  const destPath = path.join(tempDir, `${Date.now()}-${safeName}`);
 
   const destStream = fs.createWriteStream(destPath);
   let receivedBytes = 0;
   let lastReportTime = Date.now();
   let lastReportBytes = 0;
 
-  const report = () => {
+  const report = (force = false) => {
     const now = Date.now();
     const deltaSec = (now - lastReportTime) / 1000;
-    if (deltaSec >= 0.25 || (totalBytes > 0 && receivedBytes === totalBytes)) {
+    if (force || deltaSec >= 0.2 || (totalBytes > 0 && receivedBytes === totalBytes)) {
       const deltaBytes = receivedBytes - lastReportBytes;
       const bytesPerSec = deltaSec > 0 ? deltaBytes / deltaSec : 0;
       const speedMb = (bytesPerSec / (1024 * 1024)).toFixed(1);
@@ -137,10 +248,11 @@ async function executeStreamDownload(targetUrl, nodeName, emitProgress) {
       emitProgress({
         percent,
         receivedMb: (receivedBytes / (1024 * 1024)).toFixed(1),
-        totalMb: (totalBytes / (1024 * 1024)).toFixed(1),
+        totalMb: totalBytes > 0 ? (totalBytes / (1024 * 1024)).toFixed(1) : '未知',
         speedText: `${speedMb} MB/s`,
         remainingText: remainingSec > 0 ? `剩余约 ${remainingSec} 秒` : '',
         nodeName,
+        stage: 'downloading',
       });
       lastReportTime = now;
       lastReportBytes = receivedBytes;
@@ -159,9 +271,10 @@ async function executeStreamDownload(targetUrl, nodeName, emitProgress) {
           if (!canContinue) {
             await new Promise((r) => destStream.once('drain', r));
           }
-          report();
+          report(false);
         }
       }
+      report(true);
     }
   } catch (err) {
     destStream.destroy();
@@ -180,6 +293,14 @@ async function executeStreamDownload(targetUrl, nodeName, emitProgress) {
   });
 
   const stat = fs.statSync(destPath);
+  if (stat.size < 100 * 1024) {
+    try {
+      fs.unlinkSync(destPath);
+    } catch {
+      // ignore
+    }
+    throw new Error(`下载文件异常过小 (${stat.size} 字节)，可能为无效链接`);
+  }
   if (totalBytes > 0 && stat.size !== totalBytes) {
     try {
       fs.unlinkSync(destPath);
@@ -189,13 +310,47 @@ async function executeStreamDownload(targetUrl, nodeName, emitProgress) {
     throw new Error(`文件完整性校验未通过: 预期 ${totalBytes} 字节，实际 ${stat.size} 字节`);
   }
 
-  await new Promise((r) => setTimeout(r, 400));
-  await shell.openPath(destPath);
+  emitProgress({
+    percent: 100,
+    receivedMb: (stat.size / (1024 * 1024)).toFixed(1),
+    totalMb: (stat.size / (1024 * 1024)).toFixed(1),
+    speedText: '校验通过',
+    remainingText: '正在触发自动安装...',
+    nodeName,
+    stage: 'installing',
+  });
+
+  await new Promise((r) => setTimeout(r, 350));
+
+  const { spawn } = require('child_process');
+  if (process.platform === 'win32' && destPath.toLowerCase().endsWith('.exe')) {
+    try {
+      const child = spawn(destPath, [], { detached: true, stdio: 'ignore' });
+      child.unref();
+    } catch {
+      const openErr = await shell.openPath(destPath);
+      if (openErr) throw new Error(openErr);
+    }
+  } else {
+    const openErr = await shell.openPath(destPath);
+    if (openErr) throw new Error(openErr);
+  }
+
+  emitProgress({
+    percent: 100,
+    receivedMb: (stat.size / (1024 * 1024)).toFixed(1),
+    totalMb: (stat.size / (1024 * 1024)).toFixed(1),
+    speedText: '已启动安装',
+    remainingText: '',
+    nodeName,
+    stage: 'done',
+  });
 
   return {
     success: true,
     filePath: destPath,
     nodeName,
+    autoInstalled: true,
   };
 }
 
@@ -203,7 +358,11 @@ ipcMain.handle('workbuddy:get-system-info', () => {
   return getSystemInfo();
 });
 
-ipcMain.handle('workbuddy:download-and-install', async (_event, { downloadUrl, mirrorMode = 'auto' }) => {
+ipcMain.handle('workbuddy:check-latest-release', async () => {
+  return await fetchLatestReleaseInfo();
+});
+
+ipcMain.handle('workbuddy:download-and-install', async (_event, { downloadUrl, fileName, mirrorMode = 'auto' }) => {
   const candidates = getAcceleratedDownloadUrls(downloadUrl, mirrorMode);
   const emitProgress = (progressData) => {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -222,17 +381,18 @@ ipcMain.handle('workbuddy:download-and-install', async (_event, { downloadUrl, m
         speedText: '正在切换加速节点...',
         remainingText: '',
         nodeName: candidate.name,
+        stage: 'downloading',
       });
     }
     try {
-      return await executeStreamDownload(candidate.url, candidate.name, emitProgress);
+      return await executeStreamDownload(candidate.url, fileName, candidate.name, emitProgress);
     } catch (err) {
       lastError = err;
     }
   }
   return {
     success: false,
-    error: lastError && lastError.message ? lastError.message : '下载未完成',
+    error: lastError && lastError.message ? lastError.message : '所有下载源均失败',
   };
 });
 

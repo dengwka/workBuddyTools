@@ -443,7 +443,14 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
       return { ok: false, message: '请先双击左侧账号配置有效的 Cookie 或 cURL 凭据' };
     }
 
-    addLog('info', currentAccount.id, `[${currentAccount.id}] 正在执行任务【${task.name}】并请求领奖...`);
+    const isClaimOnly = task.status === '待领奖' || (task.targetProgress > 0 && task.currentProgress >= task.targetProgress);
+    addLog(
+      'info',
+      currentAccount.id,
+      isClaimOnly
+        ? `[${currentAccount.id}] 任务【${task.name}】已达标，正在直接自动领取奖励...`
+        : `[${currentAccount.id}] 正在执行任务【${task.name}】并请求领奖...`
+    );
     const pointsBefore = currentAccount.points;
 
     const execRes = await workbuddyRealApi.executeGrowthTask(
@@ -453,7 +460,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
       currentAccount.extraHeaders
     );
 
-    // Always call official API to update live points after task execution
+    // Always call official API to update live points & task status after execution
     const updatedPoints = await handleFetchLivePoints(currentAccount, false);
     await handleSyncOfficialTasks(currentAccount, false);
 
@@ -474,13 +481,13 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     }
 
     addLog(
-      'info',
+      'warn',
       currentAccount.id,
       `[${currentAccount.id}] 任务【${task.name}】：${execRes.detail}（当前官方实时积分：${pointsAfter}）`
     );
     return {
       ok: false,
-      message: `${execRes.detail}。若刚在网页/客户端完成对话，再次点击此按钮即可直接领奖！当前实时积分：${pointsAfter}`,
+      message: `${execRes.detail}。当前实时积分：${pointsAfter}`,
       points: pointsAfter,
     };
   };
@@ -591,7 +598,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     setRunningStatusText('签到完成');
   };
 
-  // Complete & Claim Tasks (calls live API points refresh after EVERY single task)
+  // Complete & Claim Tasks (prioritize claiming already-completed tasks first, then run remaining pending tasks)
   const handleClaimCompletedTasks = async () => {
     if (isRunning) return;
     const targetAccounts =
@@ -605,13 +612,34 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     }
 
     setIsRunning(true);
-    setRunningStatusText('正在执行任务并批量领奖...');
-    addLog('info', 'system', `开始为 ${targetAccounts.length} 个账号执行未完成任务并逐项同步实时积分`);
+    setRunningStatusText('正在领取已完成奖励并执行任务...');
+    addLog('info', 'system', `开始为 ${targetAccounts.length} 个账号同步任务状态、优先领取已达标奖励并执行未完成任务`);
 
     for (const acc of targetAccounts) {
-      const pendingTasks = acc.tasks.filter((t) => t.status !== '已领奖');
-      for (const t of pendingTasks) {
-        if (!acc.credentials) continue;
+      if (!acc.credentials) {
+        addLog('warn', acc.id, `[${acc.id}] 未配置凭据，已跳过`);
+        continue;
+      }
+
+      // Refresh latest tasks from server first so any completed tasks get detected as 待领奖
+      let latestTasks = acc.tasks;
+      const tasksRes = await workbuddyRealApi
+        .getGrowthTasks(acc.credentials, acc.authType, acc.extraHeaders)
+        .catch(() => null);
+      if (tasksRes?.ok && tasksRes.data) {
+        const rawList: WorkBuddyRawTask[] =
+          tasksRes.data.data?.tasks || tasksRes.data.tasks || tasksRes.data.data || [];
+        if (Array.isArray(rawList) && rawList.length > 0) {
+          latestTasks = rawList.map((rt) => mapRawTaskToWorkBuddyTask(rt));
+          setAccounts((prev) => prev.map((a) => (a.id === acc.id ? { ...a, tasks: latestTasks } : a)));
+        }
+      }
+
+      const readyToClaim = latestTasks.filter((t) => t.status === '待领奖');
+      const otherPending = latestTasks.filter((t) => t.status !== '已领奖' && t.status !== '待领奖');
+      const orderedTasks = [...readyToClaim, ...otherPending];
+
+      for (const t of orderedTasks) {
         const ptsBefore = acc.points;
         const execRes = await workbuddyRealApi.executeGrowthTask(
           t,
@@ -627,6 +655,8 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
             acc.id,
             `[${acc.id}] 成功完成并领取「${t.name}」奖励 (+${t.reward}分)，实时总积分：${livePts ?? acc.points}`
           );
+        } else {
+          addLog('warn', acc.id, `[${acc.id}] 「${t.name}」未领奖：${execRes.detail}`);
         }
       }
       await handleSyncOfficialTasks(acc, false);
@@ -1099,6 +1129,8 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                               className={`px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${
                                 task.status === '已领奖'
                                   ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                                  : task.status === '待领奖'
+                                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/50 animate-pulse'
                                   : task.status === '需等待'
                                   ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
                                   : task.status === '需人工'
@@ -1128,7 +1160,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                               onClick={async (e) => {
                                 e.stopPropagation();
                                 setSelectedTaskId(task.id);
-                                if (isWeChatTask || task.status === '已领奖') {
+                                if ((isWeChatTask && task.status !== '待领奖') || task.status === '已领奖') {
                                   setAssistingTask(task);
                                   return;
                                 }
@@ -1142,6 +1174,8 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                               className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors cursor-pointer whitespace-nowrap inline-flex items-center gap-1 ${
                                 task.status === '已领奖'
                                   ? 'bg-slate-800/70 text-slate-400 hover:text-slate-200'
+                                  : task.status === '待领奖'
+                                  ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm'
                                   : isWeChatTask
                                   ? 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30'
                                   : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30'
@@ -1150,10 +1184,15 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                               {isRowExecuting ? (
                                 <>
                                   <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                                  <span>执行中</span>
+                                  <span>{task.status === '待领奖' ? '领奖中' : '执行中'}</span>
                                 </>
                               ) : task.status === '已领奖' ? (
                                 <span>详情</span>
+                              ) : task.status === '待领奖' ? (
+                                <>
+                                  <Gift className="w-2.5 h-2.5" />
+                                  <span>立即领奖</span>
+                                </>
                               ) : isWeChatTask ? (
                                 <>
                                   <QrCode className="w-2.5 h-2.5" />

@@ -269,19 +269,30 @@ export class AutomationEngine {
             );
           }
 
-          // 6. Execute & claim each un-claimed task one by one, refreshing live points via API after EVERY task
-          const pendingRawTasks = rawTasksList.filter((t) => t.accept_status !== 'claimed');
+          // 6. Execute & claim each un-claimed task (prioritize already-completed '待领奖' tasks first!)
+          const claimableFirst = account.tasks
+            .filter((t) => t.status === '待领奖')
+            .map((t) => rawTasksList.find((r) => r.task_code === t.id || r.title === t.name))
+            .filter((r): r is WorkBuddyRawTask => Boolean(r));
+          const claimableCodes = new Set(claimableFirst.map((r) => r.task_code));
+          const otherPending = rawTasksList.filter(
+            (t) => t.accept_status !== 'claimed' && !claimableCodes.has(t.task_code)
+          );
+          const pendingRawTasks = [...claimableFirst, ...otherPending];
 
           for (const pTask of pendingRawTasks) {
             if (this.isCancelled) break;
 
+            const isPreCompleted = claimableCodes.has(pTask.task_code);
             onProgress(
               {
                 id: Math.random().toString(36).substring(2, 9),
                 timestamp: new Date().toLocaleTimeString(),
                 accountId: account.id,
                 level: 'info',
-                message: `[${account.id}] 正在自动执行任务【${pTask.title}】并尝试领奖...`,
+                message: isPreCompleted
+                  ? `[${account.id}] 检测到任务【${pTask.title}】已达标，正在直接自动领取奖励...`
+                  : `[${account.id}] 正在自动执行任务【${pTask.title}】并尝试领奖...`,
               },
               updated,
               { successes, fails, skips }
@@ -294,7 +305,7 @@ export class AutomationEngine {
               extraHeaders
             );
 
-            // Real-time API call to update points after EVERY task (Requirement #3)
+            // Real-time API call to update points after EVERY task
             const pointsBefore = account.points;
             await this.syncLivePointsFromServer(account, creds, authType, extraHeaders);
             const pointsGained = account.points > pointsBefore;
@@ -319,6 +330,17 @@ export class AutomationEngine {
                 );
               } else {
                 account.tasks[idx].recentResult = execResult.detail;
+                onProgress(
+                  {
+                    id: Math.random().toString(36).substring(2, 9),
+                    timestamp: new Date().toLocaleTimeString(),
+                    accountId: account.id,
+                    level: 'warn',
+                    message: `[${account.id}] 任务【${pTask.title}】状态: ${execResult.detail}`,
+                  },
+                  updated,
+                  { successes, fails, skips }
+                );
               }
             }
           }

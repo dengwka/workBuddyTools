@@ -157,7 +157,7 @@ export function getTaskRecipe(task: WorkBuddyTask): TaskActionRecipe {
   }
 
   // 9. Share Skill (5.9.0+)
-  if (title.includes('分享一个技能')) {
+  if (title.includes('分享') && title.includes('技能')) {
     return {
       category: 'client_action',
       targetUrl: webWorkspaceUrl,
@@ -167,6 +167,49 @@ export function getTaskRecipe(task: WorkBuddyTask): TaskActionRecipe {
         '调用官方分享通道接口 (/api/v2/open-platform/asset-shares/c2c/channels) 生成分享链接并上报成功埋点',
       ],
       autoNote: '无需真正发给好友，直接调用官方 C2C 技能分享接口即可触发完成！',
+    };
+  }
+
+  // 10. Hot Skill Install & Use
+  if (title.includes('技能') || title.includes('尝鲜')) {
+    return {
+      category: 'client_action',
+      targetUrl: webWorkspaceUrl,
+      growthCenterUrl,
+      steps: [
+        '点击下方「立即自动完成并领奖」，工具将自动安装并启用 1 个官方热门技能',
+        '自动发起携带该技能的真实对话并上报 skill_install_success / skill_used 埋点后自动领奖',
+      ],
+      autoNote: '尝鲜达人任务：已区分技能安装与分享接口，避免误路由。',
+    };
+  }
+
+  // 11. Knowledge Base
+  if (title.includes('资料库')) {
+    return {
+      category: 'client_action',
+      targetUrl: webWorkspaceUrl,
+      growthCenterUrl,
+      steps: [
+        '点击下方「立即自动完成并领奖」，工具将自动访问资料库文档接口并上报阅读完成埋点',
+        '自动触发 1 次资料库主题对话后立即尝试领取积分奖励',
+      ],
+      autoNote: '资料库任务：已独立识别并匹配资料库文档阅读与埋点协议。',
+    };
+  }
+
+  // 12. AI Chat 5x / Desktop Chat 1x
+  if (title.includes('AI 聊天') || title.includes('AI聊天') || title.includes('桌面端对话')) {
+    return {
+      category: 'client_action',
+      samplePrompt: '你好，请帮我列举 3 条高效办公的时间管理技巧。',
+      targetUrl: webWorkspaceUrl,
+      growthCenterUrl,
+      steps: [
+        '点击下方「立即自动完成并领奖」，工具将自动创建会话并发送真实对话消息轮次',
+        '完成指定次数后等待服务端校验进度，再自动清理临时会话并领取奖励',
+      ],
+      autoNote: '对话类任务：会先发送真实对话消息并在进度核验后清理，不再秒删空会话。',
     };
   }
 

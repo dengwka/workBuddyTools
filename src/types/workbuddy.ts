@@ -1,7 +1,7 @@
 export type AccountRegion = '国内版' | '国际版';
 export type AccountStatus = '正常' | '异常' | '运行中' | '排队中';
 
-export type TaskStatus = '已领奖' | '需等待' | '需人工' | '进行中' | '未完成';
+export type TaskStatus = '已领奖' | '待领奖' | '需等待' | '需人工' | '进行中' | '未完成';
 
 export interface WorkBuddyTask {
   id: string;

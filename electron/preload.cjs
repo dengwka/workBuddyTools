@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   proxyRequest: (payload) => ipcRenderer.invoke('workbuddy:proxy', payload),
   openExternal: (url) => ipcRenderer.invoke('workbuddy:open-external', url),
   getSystemInfo: () => ipcRenderer.invoke('workbuddy:get-system-info'),
+  checkLatestRelease: () => ipcRenderer.invoke('workbuddy:check-latest-release'),
   downloadAndInstallUpdate: (payload) => ipcRenderer.invoke('workbuddy:download-and-install', payload),
   onUpdateProgress: (callback) => {
     const listener = (_event, data) => callback(data);

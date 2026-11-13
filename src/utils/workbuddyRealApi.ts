@@ -433,14 +433,21 @@ export class WorkBuddyRealApi {
       return accountIdentityCache[key];
     }
 
+    const extractUidFromCreds = (): string => {
+      const uinMatch = credentials.match(/(?:^|;\s*)(?:p_uin|uin|uid|user_id|o_uid)=o?0*([0-9a-zA-Z_-]{4,32})/i);
+      if (uinMatch?.[1]) return uinMatch[1];
+      return '';
+    };
+
     const res = await this.request('/console/accounts', 'GET', credentials, authType, undefined, extraHeaders).catch(
       () => null
     );
-    const acc = res?.data?.data?.accounts?.[0];
-    if (acc?.uid) {
+    const acc = res?.data?.data?.accounts?.[0] || res?.data?.accounts?.[0];
+    const accUid = String(acc?.uid || acc?.uin || acc?.userId || acc?.user_id || acc?.id || '');
+    if (accUid) {
       accountIdentityCache[key] = {
-        uid: String(acc.uid),
-        nickname: String(acc.nickname || acc.enterpriseUserName || acc.uid),
+        uid: accUid,
+        nickname: String(acc?.nickname || acc?.enterpriseUserName || acc?.name || accUid),
         machineId: getStableMachineId(credentials),
       };
       return accountIdentityCache[key];
@@ -450,7 +457,9 @@ export class WorkBuddyRealApi {
       () => null
     );
     const selfData = selfRes?.data?.data || selfRes?.data;
-    const uid = String(selfData?.uid || selfData?.id || selfData?.user_id || '');
+    const uid = String(
+      selfData?.uid || selfData?.uin || selfData?.userId || selfData?.user_id || selfData?.id || extractUidFromCreds()
+    );
     const nickname = String(selfData?.nickname || selfData?.username || selfData?.name || uid || 'WorkBuddyUser');
     accountIdentityCache[key] = {
       uid,
@@ -608,21 +617,103 @@ export class WorkBuddyRealApi {
     );
   }
 
-  // 5. Claim reward for a completed task
+  private isApiSuccess(res: { ok: boolean; status: number; data: any }): boolean {
+    if (!res.ok) return false;
+    const d = res.data;
+    if (!d || typeof d !== 'object') return true;
+    if (d.code !== undefined && d.code !== 0) return false;
+    if (d.ret !== undefined && d.ret !== 0) return false;
+    if (d.success === false) return false;
+    const msg = String(d.message || d.msg || '').toLowerCase();
+    if (msg.includes('not completed') || msg.includes('not finished') || msg.includes('未完成') || msg.includes('fail')) {
+      return false;
+    }
+    return true;
+  }
+
+  // 5. Claim reward for a completed task (supports Growth Center web & v2/v1 claim endpoints)
   public async claimTaskReward(
     taskCode: string,
     credentials: string,
     authType: 'cookie' | 'token',
     extraHeaders?: Record<string, string>
-  ) {
-    return this.request(
-      `/activity/growth/tasks/${taskCode}/claim`,
-      'POST',
-      credentials,
-      authType,
-      {},
-      extraHeaders
-    );
+  ): Promise<{ ok: boolean; status: number; data: any; message: string; endpoint?: string }> {
+    const encodedCode = encodeURIComponent(taskCode);
+    const growthWebHeaders: Record<string, string> = {
+      ...(extraHeaders || {}),
+      'X-Client-Platform': 'web',
+      Origin: 'https://www.workbuddy.cn',
+      Referer: 'https://www.workbuddy.cn/profile/growth-center',
+    };
+
+    const attempts: Array<{ path: string; body: any; headers: Record<string, string> }> = [
+      { path: `/v2/activity/growth/tasks/${encodedCode}/claim`, body: {}, headers: growthWebHeaders },
+      { path: `/activity/growth/tasks/${encodedCode}/claim`, body: {}, headers: growthWebHeaders },
+      { path: '/v2/activity/growth/tasks/claim', body: { task_code: taskCode, taskCode }, headers: growthWebHeaders },
+      { path: '/activity/growth/tasks/claim', body: { task_code: taskCode, taskCode }, headers: growthWebHeaders },
+      { path: `/v2/activity/growth/tasks/${encodedCode}/receive`, body: {}, headers: growthWebHeaders },
+      { path: `/activity/growth/tasks/${encodedCode}/claim`, body: {}, headers: extraHeaders || {} },
+    ];
+
+    let lastRes: { ok: boolean; status: number; data: any } = { ok: false, status: 500, data: {} };
+
+    for (const attempt of attempts) {
+      const res = await this.request(
+        attempt.path,
+        'POST',
+        credentials,
+        authType,
+        attempt.body,
+        attempt.headers
+      ).catch(() => ({ ok: false, status: 500, data: { error: 'network error' } }));
+
+      lastRes = res;
+      const msgLower = String(res.data?.message || res.data?.msg || '').toLowerCase();
+      const alreadyClaimed =
+        msgLower.includes('already claimed') ||
+        msgLower.includes('already_claimed') ||
+        msgLower.includes('已领取');
+
+      if (this.isApiSuccess(res) || alreadyClaimed) {
+        // Report Growth Center reward modal confirmation telemetry ("收下奖励")
+        await this.reportTelemetryEvents(
+          [
+            {
+              eventCode: 'growth_task_claim_click',
+              payload: { task_code: taskCode, source: 'growth_center' },
+            },
+            {
+              eventCode: 'growth_task_claim_success',
+              payload: { task_code: taskCode, source: 'growth_center' },
+            },
+          ],
+          credentials,
+          authType,
+          extraHeaders
+        ).catch(() => null);
+
+        return {
+          ok: true,
+          status: res.status,
+          data: res.data,
+          endpoint: attempt.path,
+          message: alreadyClaimed ? '该任务奖励已领取' : '奖励领取成功',
+        };
+      }
+    }
+
+    const errDetail =
+      lastRes.data?.message ||
+      lastRes.data?.msg ||
+      lastRes.data?.error ||
+      (lastRes.status === 401 ? 'Cookie/Token 已失效 (401)' : `HTTP ${lastRes.status}`);
+
+    return {
+      ok: false,
+      status: lastRes.status,
+      data: lastRes.data,
+      message: String(errDetail),
+    };
   }
 
   // 6. Fetch Cat Travel status
@@ -748,13 +839,14 @@ export class WorkBuddyRealApi {
     return streakRes;
   }
 
-  // Helper: create a cloud conversation to satisfy server-side conversation/expert/template task checks, then delete it cleanly
-  private async createAndCleanupCloudConversation(
+  // Helper: create a cloud conversation, send an actual user message turn, and return a delayed cleanup function
+  private async executeCloudConversationTurn(
     payload: Record<string, any>,
+    promptText: string,
     credentials: string,
     authType: 'cookie' | 'token',
     desktopHeaders: Record<string, string>
-  ): Promise<string> {
+  ): Promise<{ convId: string; messageSent: boolean; cleanup: () => Promise<void> }> {
     const res = await this.request(
       '/console/as/conversations/',
       'POST',
@@ -769,27 +861,196 @@ export class WorkBuddyRealApi {
       desktopHeaders
     ).catch(() => null);
 
-    const convId =
-      res?.data?.data?.conversationId ||
-      res?.data?.data?.id ||
-      res?.data?.conversationId ||
-      res?.data?.id ||
-      `conv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    const realId = res?.data?.data?.conversationId || res?.data?.data?.id || res?.data?.conversationId || res?.data?.id;
+    const convId = String(realId || `conv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
+    let messageSent = false;
 
-    if (res?.ok && (res?.data?.data?.id || res?.data?.id || res?.data?.data?.conversationId)) {
-      const realId = res?.data?.data?.id || res?.data?.id || res?.data?.data?.conversationId;
-      // Clean up temporary conversation after a short delay so user's workspace stays clean
-      await this.request(
-        `/console/as/conversations/${realId}/delete`,
+    if (realId) {
+      const msgEndpoints: Array<{ path: string; body: Record<string, any> }> = [
+        {
+          path: `/console/as/conversations/${realId}/messages`,
+          body: {
+            content: promptText,
+            prompt: promptText,
+            query: promptText,
+            role: 'user',
+            model: 'deepseek-r1',
+            stream: false,
+            ...(payload.expertId ? { expertId: payload.expertId, expert_id: payload.expertId } : {}),
+            ...(payload.expertType ? { expertType: payload.expertType, expert_type: payload.expertType } : {}),
+            ...(payload.templateId ? { templateId: payload.templateId, template_id: payload.templateId } : {}),
+          },
+        },
+        {
+          path: `/console/as/conversations/${realId}/chat`,
+          body: {
+            message: promptText,
+            prompt: promptText,
+            model: 'deepseek-r1',
+            stream: false,
+            ...(payload.expertId ? { expertId: payload.expertId, expert_id: payload.expertId } : {}),
+          },
+        },
+        {
+          path: '/v2/as/chat/completions',
+          body: {
+            conversationId: String(realId),
+            conversation_id: String(realId),
+            prompt: promptText,
+            messages: [{ role: 'user', content: promptText }],
+            model: 'deepseek-r1',
+            stream: false,
+            ...(payload.expertId ? { expertId: payload.expertId, expert_id: payload.expertId } : {}),
+          },
+        },
+      ];
+
+      for (const ep of msgEndpoints) {
+        const msgRes = await this.request(
+          ep.path,
+          'POST',
+          credentials,
+          authType,
+          ep.body,
+          desktopHeaders
+        ).catch(() => null);
+        if (msgRes?.ok) {
+          messageSent = true;
+          break;
+        }
+      }
+    }
+
+    const cleanup = async () => {
+      if (realId) {
+        await this.request(
+          `/console/as/conversations/${realId}/delete`,
+          'POST',
+          credentials,
+          authType,
+          {},
+          desktopHeaders
+        ).catch(() => null);
+      }
+    };
+
+    return { convId, messageSent, cleanup };
+  }
+
+  // Helper: fetch real experts / expert teams from official WorkBuddy directory & search endpoints
+  private async resolveOfficialExperts(
+    isTeam: boolean,
+    specificExpertName: string | undefined,
+    credentials: string,
+    authType: 'cookie' | 'token',
+    desktopHeaders: Record<string, string>
+  ): Promise<Array<{ id: string; name: string; isTeam: boolean }>> {
+    const collected: Array<{ id: string; name: string; isTeam: boolean }> = [];
+    const seenIds = new Set<string>();
+
+    const pushCandidate = (item: any, forceTeam = false) => {
+      if (!item || typeof item !== 'object') return;
+      const id = String(item.asset_id || item.expert_id || item.team_id || item.id || '').trim();
+      const name = String(item.name || item.title || item.expert_name || '').trim();
+      if (!id || !name) return;
+      const itemIsTeam =
+        forceTeam ||
+        item.type === 'team' ||
+        item.expert_type === 'team' ||
+        item.asset_type === 'expert_team' ||
+        item.is_team === true ||
+        name.includes('团');
+      if (!seenIds.has(id)) {
+        seenIds.add(id);
+        collected.push({ id, name, isTeam: itemIsTeam });
+      }
+    };
+
+    const extractList = (res: any): any[] => {
+      const d = res?.data?.data || res?.data;
+      if (Array.isArray(d)) return d;
+      if (!d || typeof d !== 'object') return [];
+      const arr = d.list || d.experts || d.teams || d.items || d.records || [];
+      return Array.isArray(arr) ? arr : [];
+    };
+
+    if (specificExpertName) {
+      const searchGet = await this.request(
+        `/api/v2/open-platform/experts/search?keyword=${encodeURIComponent(specificExpertName)}&page=1&page_size=20`,
+        'GET',
+        credentials,
+        authType,
+        undefined,
+        desktopHeaders
+      ).catch(() => null);
+      extractList(searchGet).forEach((item) => pushCandidate(item));
+
+      const searchPost = await this.request(
+        '/api/v2/open-platform/experts/search',
         'POST',
         credentials,
         authType,
-        {},
+        { keyword: specificExpertName, page: 1, page_size: 20 },
         desktopHeaders
       ).catch(() => null);
+      extractList(searchPost).forEach((item) => pushCandidate(item));
     }
 
-    return String(convId);
+    if (isTeam) {
+      const teamEndpoints = [
+        { path: '/api/v2/open-platform/expert-teams?page=1&page_size=30', method: 'GET' as const },
+        { path: '/console/expert/teams?limit=30', method: 'GET' as const },
+        { path: '/api/v2/open-platform/experts?type=team&page=1&page_size=30', method: 'GET' as const },
+        {
+          path: '/api/v2/open-platform/experts/search',
+          method: 'POST' as const,
+          body: { keyword: '', type: 'team', expert_type: 'team', page: 1, page_size: 30 },
+        },
+      ];
+      for (const ep of teamEndpoints) {
+        const res = await this.request(
+          ep.path,
+          ep.method,
+          credentials,
+          authType,
+          ep.body,
+          desktopHeaders
+        ).catch(() => null);
+        extractList(res).forEach((item) => pushCandidate(item, true));
+      }
+    }
+
+    const rankRes = await this.request(
+      '/console/expert/ranking?limit=100',
+      'GET',
+      credentials,
+      authType,
+      undefined,
+      desktopHeaders
+    ).catch(() => null);
+    extractList(rankRes).forEach((item) => pushCandidate(item));
+
+    const marketGetRes = await this.request(
+      '/api/v2/open-platform/experts?page=1&page_size=50',
+      'GET',
+      credentials,
+      authType,
+      undefined,
+      desktopHeaders
+    ).catch(() => null);
+    extractList(marketGetRes).forEach((item) => pushCandidate(item));
+
+    const marketPostRes = await this.request(
+      '/api/v2/open-platform/experts',
+      'POST',
+      credentials,
+      authType,
+      { template_id: 1, items: [] },
+      desktopHeaders
+    ).catch(() => null);
+    extractList(marketPostRes).forEach((item) => pushCandidate(item));
+
+    return collected;
   }
 
   // 10. Execute a specific growth task using real WorkBuddy production endpoints & /v2/report telemetry
@@ -805,6 +1066,15 @@ export class WorkBuddyRealApi {
       ('targetProgress' in task ? task.targetProgress : task.target_progress) ||
       (title.includes('5') ? 5 : title.includes('3') ? 3 : 1);
 
+    const isAlreadyReadyToClaim =
+      ('accept_status' in task && task.accept_status === 'completed') ||
+      ('status' in task && task.status === '待领奖') ||
+      ('currentProgress' in task &&
+        'targetProgress' in task &&
+        task.targetProgress > 0 &&
+        task.currentProgress >= task.targetProgress &&
+        task.status !== '已领奖');
+
     const identity = await this.resolveAccountIdentity(credentials, authType, extraHeaders);
     const desktopUA =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) WorkBuddy/5.9.0 Chrome/131.0.0.0 Electron/33.2.0 Safari/537.36';
@@ -819,10 +1089,30 @@ export class WorkBuddyRealApi {
       ...(identity.uid ? { 'X-User-Id': identity.uid } : {}),
     };
 
+    // Fast path: if task is already completed ("领取奖励"), claim directly without re-running!
+    if (isAlreadyReadyToClaim) {
+      const directClaim = await this.claimTaskReward(taskCode, credentials, authType, extraHeaders);
+      if (directClaim.ok) {
+        return {
+          triggered: true,
+          claimed: true,
+          status: directClaim.status,
+          detail: `任务已达标，成功自动领取奖励！(${directClaim.endpoint || 'claim'})`,
+        };
+      }
+      return {
+        triggered: true,
+        claimed: false,
+        status: directClaim.status,
+        detail: `任务已达标，但领奖接口未通过: ${directClaim.message}`,
+      };
+    }
+
     // Step 1: Ensure task is accepted in Growth Center
-    await this.acceptTasks([taskCode], credentials, authType, desktopHeaders).catch(() => null);
+    await this.acceptTasks([taskCode], credentials, authType, extraHeaders).catch(() => null);
 
     let anyTriggerOk = false;
+    const pendingCleanups: Array<() => Promise<void>> = [];
 
     // =========================================================================
     // Category A: 关注「腾讯 WorkBuddy」官方公众号
@@ -887,15 +1177,19 @@ export class WorkBuddyRealApi {
         desktopHeaders
       ).catch(() => null);
 
-      const convId = await this.createAndCleanupCloudConversation(
+      const turn = await this.executeCloudConversationTurn(
         {
           prompt: inspPrompt,
           tags: ['playbook', `inspiration:${inspId}`],
         },
+        inspPrompt,
         credentials,
         authType,
         desktopHeaders
       );
+      const convId = turn.convId;
+      pendingCleanups.push(turn.cleanup);
+      if (turn.messageSent) anyTriggerOk = true;
       const reqId = `req_${Date.now()}`;
 
       const repRes = await this.reportTelemetryEvents(
@@ -1028,9 +1322,9 @@ export class WorkBuddyRealApi {
     }
 
     // =========================================================================
-    // Category D: 分享一个技能给好友 (Skill Share 5.9.0+)
+    // Category D1: 分享一个技能给好友 (Skill Share 5.9.0+)
     // =========================================================================
-    else if (title.includes('分享一个技能') || title.includes('技能')) {
+    else if (title.includes('分享') && title.includes('技能')) {
       const skillsRes = await this.request(
         '/api/v2/open-platform/skills',
         'GET',
@@ -1125,6 +1419,127 @@ export class WorkBuddyRealApi {
               panelAction: 'success',
               isSuccessful: true,
               shareToken: shareRes.data?.data?.share_token || traceId,
+            },
+          },
+        ],
+        credentials,
+        authType,
+        desktopHeaders
+      );
+      if (repRes.ok) anyTriggerOk = true;
+    }
+
+    // =========================================================================
+    // Category D2: 尝鲜热门技能 (安装并使用 1 个技能)
+    // =========================================================================
+    else if (title.includes('技能') || title.includes('尝鲜')) {
+      const skillsRes = await this.request(
+        '/api/v2/open-platform/skills',
+        'GET',
+        credentials,
+        authType,
+        undefined,
+        desktopHeaders
+      );
+      const searchRes = await this.request(
+        '/api/v2/open-platform/skills/search',
+        'POST',
+        credentials,
+        authType,
+        { keyword: '', page: 1, page_size: 10 },
+        desktopHeaders
+      );
+      const skillList =
+        skillsRes.data?.data?.list ||
+        skillsRes.data?.data?.items ||
+        skillsRes.data?.data ||
+        searchRes.data?.data?.list ||
+        searchRes.data?.data?.items ||
+        [];
+      const firstSkill = Array.isArray(skillList) && skillList[0] ? skillList[0] : {};
+      const skillId = String(firstSkill.asset_id || firstSkill.skill_id || firstSkill.id || 'builtin_web_search');
+      const skillName = String(firstSkill.name || firstSkill.title || '热门办公技能');
+
+      const installRes = await this.request(
+        `/api/v2/open-platform/skills/${encodeURIComponent(skillId)}/install`,
+        'POST',
+        credentials,
+        authType,
+        { asset_id: skillId, skill_id: skillId },
+        desktopHeaders
+      ).catch(() => null);
+      if (installRes?.ok) anyTriggerOk = true;
+
+      await this.request(
+        '/api/v2/open-platform/asset-usage/report',
+        'POST',
+        credentials,
+        authType,
+        {
+          asset_id: skillId,
+          asset_type: 'skill',
+          action: 'install',
+        },
+        desktopHeaders
+      ).catch(() => null);
+
+      const skillPrompt = `请使用技能「${skillName}」帮我整理一份今日重点待办摘要。`;
+      const turn = await this.executeCloudConversationTurn(
+        {
+          prompt: skillPrompt,
+          skillId,
+          skillName,
+          tags: [`skill:${skillId}`],
+        },
+        skillPrompt,
+        credentials,
+        authType,
+        desktopHeaders
+      );
+      pendingCleanups.push(turn.cleanup);
+      if (turn.messageSent) anyTriggerOk = true;
+
+      await this.request(
+        '/api/v2/open-platform/asset-usage/report',
+        'POST',
+        credentials,
+        authType,
+        {
+          asset_id: skillId,
+          asset_type: 'skill',
+          action: 'use',
+        },
+        desktopHeaders
+      ).catch(() => null);
+
+      const reqId = `req_${Date.now()}`;
+      const repRes = await this.reportTelemetryEvents(
+        [
+          {
+            eventCode: 'skill_install_success',
+            payload: { skillId, skillName, from: 'market' },
+          },
+          {
+            eventCode: 'skill_used',
+            payload: { skillId, skillName, conversationId: turn.convId, requestId: reqId },
+          },
+          {
+            eventCode: 'agent_task_created',
+            payload: {
+              mode: 'LOCAL',
+              isCustomModel: true,
+              conversation_id: turn.convId,
+              request_id: reqId,
+              skill_id: skillId,
+              skill_name: skillName,
+            },
+          },
+          {
+            eventCode: 'chat_response_complete',
+            payload: {
+              conversation_id: turn.convId,
+              request_id: reqId,
+              skill_id: skillId,
             },
           },
         ],
@@ -1261,16 +1676,20 @@ export class WorkBuddyRealApi {
         const tplPrompt = String(tpl.prompt || tpl.description || `使用模板「${tplName}」生成示例内容`);
         const actionId = `${tplId}:${i}`;
 
-        const convId = await this.createAndCleanupCloudConversation(
+        const turn = await this.executeCloudConversationTurn(
           {
             prompt: tplPrompt,
             templateId: tplId,
             tags: [`template:${tplId}`],
           },
+          tplPrompt,
           credentials,
           authType,
           desktopHeaders
         );
+        const convId = turn.convId;
+        pendingCleanups.push(turn.cleanup);
+        if (turn.messageSent) anyTriggerOk = true;
         const reqId = `req_${Date.now()}_${i}`;
 
         await this.request(
@@ -1339,107 +1758,211 @@ export class WorkBuddyRealApi {
     }
 
     // =========================================================================
-    // Category G: 体验「XXX专家」 / 召唤 5 次专家 / 召唤 3 次专家团
+    // Category G1: 体验「资料库」
+    // =========================================================================
+    else if (title.includes('资料库')) {
+      const kbEndpoints = [
+        '/api/v2/knowledge/docs',
+        '/api/v1/knowledge/list',
+        '/v2/docs/workbuddy',
+      ];
+      for (const ep of kbEndpoints) {
+        const kbRes = await this.request(ep, 'GET', credentials, authType, undefined, desktopHeaders).catch(() => null);
+        if (kbRes?.ok) anyTriggerOk = true;
+      }
+
+      const kbPrompt = '请介绍一下 WorkBuddy 资料库的核心功能和使用方法。';
+      const turn = await this.executeCloudConversationTurn(
+        { prompt: kbPrompt, tags: ['knowledge_base'] },
+        kbPrompt,
+        credentials,
+        authType,
+        desktopHeaders
+      );
+      pendingCleanups.push(turn.cleanup);
+      if (turn.messageSent) anyTriggerOk = true;
+
+      const repRes = await this.reportTelemetryEvents(
+        [
+          { eventCode: 'knowledge_base_enter', payload: { source: 'growth_center' } },
+          { eventCode: 'docs_view', payload: { docTitle: 'WorkBuddy 资料库介绍', source: 'knowledge_base' } },
+          { eventCode: 'knowledge_doc_read_complete', payload: { docTitle: 'WorkBuddy 资料库介绍', progress: 100 } },
+        ],
+        credentials,
+        authType,
+        desktopHeaders
+      );
+      if (repRes.ok) anyTriggerOk = true;
+    }
+
+    // =========================================================================
+    // Category G2: 和 AI 聊天 5 次 / 桌面端对话 1 次 / 领取一只 Buddy
+    // =========================================================================
+    else if (
+      title.includes('AI 聊天') ||
+      title.includes('AI聊天') ||
+      title.includes('桌面端对话') ||
+      title.includes('领取一只') ||
+      (title.includes('对话') && !title.includes('体验「') && !title.includes('专家'))
+    ) {
+      const count = title.includes('5') ? Math.max(targetCount, 5) : Math.max(targetCount, 1);
+      const chatPrompts = [
+        '你好，请帮我列举 3 条高效办公的时间管理技巧。',
+        '帮我把「完成本周工作总结」拆分成 3 个可执行的步骤。',
+        '请用一句话总结如何提升团队协作效率。',
+        '帮我生成一段简洁的项目进度汇报开头。',
+        '给我推荐 2 个提升日常文档写作质量的方法。',
+      ];
+
+      for (let i = 0; i < count; i++) {
+        const promptText = chatPrompts[i % chatPrompts.length];
+        const turn = await this.executeCloudConversationTurn(
+          {
+            prompt: promptText,
+            conversationOrigin: 'desktop',
+            tags: ['daily_chat', title.includes('桌面端') ? 'desktop_chat' : 'ai_chat'],
+          },
+          promptText,
+          credentials,
+          authType,
+          desktopHeaders
+        );
+        pendingCleanups.push(turn.cleanup);
+        if (turn.messageSent) anyTriggerOk = true;
+        const reqId = `req_${Date.now()}_${i}`;
+
+        const repRes = await this.reportTelemetryEvents(
+          [
+            {
+              eventCode: 'agent_task_created',
+              payload: {
+                mode: 'LOCAL',
+                isCustomModel: false,
+                conversation_id: turn.convId,
+                request_id: reqId,
+                source: 'desktop',
+              },
+            },
+            {
+              eventCode: 'chat_message_send',
+              payload: {
+                conversation_id: turn.convId,
+                request_id: reqId,
+                promptLength: promptText.length,
+              },
+            },
+            {
+              eventCode: 'chat_response_complete',
+              payload: {
+                conversation_id: turn.convId,
+                request_id: reqId,
+                isSuccess: true,
+              },
+            },
+          ],
+          credentials,
+          authType,
+          desktopHeaders
+        );
+        if (repRes.ok) anyTriggerOk = true;
+      }
+    }
+
+    // =========================================================================
+    // Category G3: 体验「XXX专家」 / 召唤 5 次专家 / 召唤 3 次专家团
     // =========================================================================
     else {
       const isTeam = title.includes('专家团');
       const specificMatch = title.match(/体验「([^」]+)」/);
       const specificExpertName = specificMatch ? specificMatch[1] : undefined;
 
-      const rankRes = await this.request(
-        '/console/expert/ranking?limit=30',
-        'GET',
+      const allExperts = await this.resolveOfficialExperts(
+        isTeam,
+        specificExpertName,
         credentials,
         authType,
-        undefined,
         desktopHeaders
       );
-      const marketRes = await this.request(
-        '/api/v2/open-platform/experts',
-        'POST',
-        credentials,
-        authType,
-        { template_id: 1, items: [] },
-        desktopHeaders
-      );
-
-      const rankList =
-        rankRes.data?.data?.list ||
-        rankRes.data?.data?.experts ||
-        rankRes.data?.data ||
-        [];
-      const marketList =
-        marketRes.data?.data?.list ||
-        marketRes.data?.data?.items ||
-        marketRes.data?.data ||
-        [];
-      const allExperts = [
-        ...(Array.isArray(rankList) ? rankList : []),
-        ...(Array.isArray(marketList) ? marketList : []),
-      ];
-
-      const fallbackExperts = [
-        { id: 'exp_valorant_pindou', name: '无畏契约拼豆专家' },
-        { id: 'exp_cn_ecommerce', name: '中国电商运营专家' },
-        { id: 'exp_douyin_strategist', name: '抖音策略师' },
-        { id: 'exp_poster_designer', name: '商家宣传页与海报设计师' },
-        { id: 'exp_live_ecommerce_coach', name: '直播电商教练' },
-      ];
+      const teamPool = allExperts.filter((e) => e.isTeam);
+      const effectivePool = isTeam && teamPool.length > 0 ? teamPool : allExperts;
 
       const iterations = specificExpertName ? 1 : Math.max(targetCount, isTeam ? 3 : 5);
+      const usedExpertIds = new Set<string>();
 
       for (let i = 0; i < iterations; i++) {
-        let targetName =
-          specificExpertName ||
-          (isTeam ? `专家团队 ${i + 1}` : fallbackExperts[i % fallbackExperts.length].name);
+        let chosen: { id: string; name: string; isTeam: boolean } | undefined;
 
-        const matched = allExperts.find(
-          (e: any) =>
-            (e.name && String(e.name).includes(targetName)) ||
-            (e.title && String(e.title).includes(targetName))
-        );
-        const chosen = matched || allExperts[i] || fallbackExperts[i % fallbackExperts.length];
-        const expertId = String(chosen?.asset_id || chosen?.expert_id || chosen?.id || `expert_${i + 1}`);
-        if (!specificExpertName && (chosen?.name || chosen?.title)) {
-          targetName = String(chosen.name || chosen.title);
+        if (specificExpertName) {
+          chosen =
+            allExperts.find((e) => e.name === specificExpertName) ||
+            allExperts.find((e) => e.name.includes(specificExpertName) || specificExpertName.includes(e.name));
+        } else {
+          chosen =
+            effectivePool.find((e) => !usedExpertIds.has(e.id)) ||
+            effectivePool[i % Math.max(effectivePool.length, 1)];
         }
 
-        const promptText = `你好，我是通过成长中心前来体验「${targetName}」的，请简单介绍一下你的核心能力。`;
+        const expertId = chosen?.id || '';
+        const targetName = chosen?.name || specificExpertName || (isTeam ? `专家团队 ${i + 1}` : `官方专家 ${i + 1}`);
+        if (expertId) {
+          usedExpertIds.add(expertId);
+        }
 
-        const convId = await this.createAndCleanupCloudConversation(
+        const promptText = `你好，我是通过成长中心前来体验「${targetName}」的，请简单介绍一下你的核心能力并给出一个实用示例。`;
+
+        const turn = await this.executeCloudConversationTurn(
           {
             prompt: promptText,
-            expertId,
+            ...(expertId ? { expertId, expert_id: expertId } : {}),
             expertName: targetName,
             expertType: isTeam ? 'team' : 'agent',
-            tags: [`expert:${expertId}`, `expert_name:${targetName}`],
+            tags: expertId ? [`expert:${expertId}`, `expert_name:${targetName}`] : [`expert_name:${targetName}`],
           },
+          promptText,
           credentials,
           authType,
           desktopHeaders
         );
+        const convId = turn.convId;
+        pendingCleanups.push(turn.cleanup);
+        if (turn.messageSent) anyTriggerOk = true;
         const reqId = `req_${Date.now()}_${i}`;
 
-        const usageRes = await this.request(
-          '/api/v2/open-platform/asset-usage/report',
-          'POST',
-          credentials,
-          authType,
-          {
-            asset_id: expertId,
-            asset_name: targetName,
-            asset_type: isTeam ? 'expert_team' : 'expert',
-            action: 'summon',
-          },
-          desktopHeaders
-        );
-        if (usageRes.ok) anyTriggerOk = true;
+        if (expertId) {
+          const usageRes = await this.request(
+            '/api/v2/open-platform/asset-usage/report',
+            'POST',
+            credentials,
+            authType,
+            {
+              asset_id: expertId,
+              asset_name: targetName,
+              asset_type: isTeam ? 'expert_team' : 'expert',
+              action: 'summon',
+            },
+            desktopHeaders
+          ).catch(() => null);
+          if (usageRes?.ok) anyTriggerOk = true;
+        }
 
         const repRes = await this.reportTelemetryEvents(
           [
             {
+              eventCode: 'expert_card_click',
+              payload: {
+                buddyId: expertId,
+                buddyName: targetName,
+                expertId,
+                expertName: targetName,
+                expertType: isTeam ? 'team' : 'agent',
+                source: 'growth_center',
+              },
+            },
+            {
               eventCode: 'expert_summon_click',
               payload: {
+                buddyId: expertId,
+                buddyName: targetName,
                 expertId,
                 expertName: targetName,
                 expertType: isTeam ? 'team' : 'agent',
@@ -1449,6 +1972,8 @@ export class WorkBuddyRealApi {
             {
               eventCode: 'expert_summoned',
               payload: {
+                buddyId: expertId,
+                buddyName: targetName,
                 expertId,
                 expertName: targetName,
                 expertType: isTeam ? 'team' : 'agent',
@@ -1458,6 +1983,8 @@ export class WorkBuddyRealApi {
             {
               eventCode: 'expert_actual_use',
               payload: {
+                buddyId: expertId,
+                buddyName: targetName,
                 expertId,
                 expertName: targetName,
                 expertType: isTeam ? 'team' : 'agent',
@@ -1470,17 +1997,22 @@ export class WorkBuddyRealApi {
               payload: {
                 mode: 'LOCAL',
                 isCustomModel: true,
+                buddyId: expertId,
+                buddyName: targetName,
                 conversation_id: convId,
                 request_id: reqId,
                 has_expert: true,
                 expert_id: expertId,
                 expert_name: targetName,
                 expert_type: isTeam ? 'team' : 'agent',
+                source: 'expert',
               },
             },
             {
               eventCode: 'chat_response_complete',
               payload: {
+                buddyId: expertId,
+                buddyName: targetName,
                 conversation_id: convId,
                 request_id: reqId,
                 has_expert: true,
@@ -1497,28 +2029,38 @@ export class WorkBuddyRealApi {
       }
     }
 
+    // Give official server a brief moment to settle event/message counters before checking & cleaning up
+    await new Promise((r) => setTimeout(r, 600));
+
     // Step 3: Attempt to claim reward right away
-    const claimRes = await this.claimTaskReward(taskCode, credentials, authType, desktopHeaders);
-    let claimed =
-      claimRes.ok &&
-      claimRes.data?.code === 0 &&
-      !String(claimRes.data?.message || '').toLowerCase().includes('not');
+    let claimRes = await this.claimTaskReward(taskCode, credentials, authType, extraHeaders);
+    let claimed = claimRes.ok;
 
     // Step 4: Re-fetch /v2/activity/growth/tasks to verify real server-side progress and status
-    const verifyRes = await this.getGrowthTasks(credentials, authType, desktopHeaders).catch(() => null);
+    const verifyRes = await this.getGrowthTasks(credentials, authType, extraHeaders).catch(() => null);
     const rawTasks: WorkBuddyRawTask[] =
       verifyRes?.data?.data?.tasks || verifyRes?.data?.tasks || verifyRes?.data?.data || [];
     const updatedRaw = Array.isArray(rawTasks)
       ? rawTasks.find((t) => t.task_code === taskCode || t.title === title)
       : undefined;
 
+    // Clean up temporary conversations AFTER verification so server sees active dialogue turns first
+    for (const cleanupFn of pendingCleanups) {
+      await cleanupFn().catch(() => null);
+    }
+
     if (updatedRaw) {
       const mapped = mapRawTaskToWorkBuddyTask(updatedRaw);
       if (mapped.status === '已领奖') {
         claimed = true;
-      } else if (updatedRaw.accept_status === 'completed') {
-        const retryClaim = await this.claimTaskReward(taskCode, credentials, authType, desktopHeaders);
-        if (retryClaim.ok && retryClaim.data?.code === 0) {
+      } else if (
+        updatedRaw.accept_status === 'completed' ||
+        mapped.status === '待领奖' ||
+        (mapped.targetProgress > 0 && mapped.currentProgress >= mapped.targetProgress)
+      ) {
+        const retryClaim = await this.claimTaskReward(taskCode, credentials, authType, extraHeaders);
+        claimRes = retryClaim;
+        if (retryClaim.ok) {
           claimed = true;
         }
       }
@@ -1528,7 +2070,10 @@ export class WorkBuddyRealApi {
           triggered: anyTriggerOk,
           claimed: false,
           status: claimRes.status,
-          detail: `已向官方发送任务埋点与请求，服务端当前进度: ${mapped.currentProgress}/${mapped.targetProgress}`,
+          detail:
+            mapped.currentProgress >= mapped.targetProgress
+              ? `任务进度已达标 (${mapped.currentProgress}/${mapped.targetProgress})，但自动领奖返回: ${claimRes.message}`
+              : `已发送真实对话与任务埋点，服务端当前进度: ${mapped.currentProgress}/${mapped.targetProgress}（提示: ${claimRes.message}）`,
         };
       }
     }
@@ -1538,10 +2083,10 @@ export class WorkBuddyRealApi {
       claimed,
       status: claimRes.status,
       detail: claimed
-        ? '成功完成任务并领取积分奖励！'
+        ? '成功完成任务并自动领取积分奖励！'
         : anyTriggerOk
-        ? '已上报官方任务事件 (/v2/report)，正在等待服务端结算进度'
-        : '触发请求已发送，请检查账号凭据状态',
+        ? `已上报官方任务事件 (${claimRes.message})，正在等待服务端结算进度`
+        : `触发请求未成功 (${claimRes.message})，请检查账号凭据状态`,
     };
   }
 }
@@ -1612,6 +2157,31 @@ export const OFFICIAL_TASK_DESCRIPTIONS: Record<string, { desc: string; target: 
     target: 1,
     reward: 100,
   },
+  '和 AI 聊天 5 次': {
+    desc: '和AI对话累计 5 次。(截止 11.13 · 话唠本唠 · 100 Credits + 5 能量)',
+    target: 5,
+    reward: 100,
+  },
+  尝鲜热门技能: {
+    desc: '安装并使用 1 个技能。(截止 11.13 · 尝鲜达人 · 100 Credits + 5 能量)',
+    target: 1,
+    reward: 100,
+  },
+  '体验「资料库」': {
+    desc: '前往「资料库」，读完《WorkBuddy 资料库介绍》这篇文档。(100 Credits + 5 能量)',
+    target: 1,
+    reward: 100,
+  },
+  '体验「腾讯轻量云」专家': {
+    desc: '召唤专家，在对话框上方授权连接器后，对话一次。(截止 11.13 · 100 Credits + 5 能量)',
+    target: 1,
+    reward: 100,
+  },
+  桌面端对话1次: {
+    desc: '下载并使用桌面端，即可解锁限定款 Buddy 盲盒。(100 Credits + 5 能量)',
+    target: 1,
+    reward: 100,
+  },
 };
 
 export function toSafeNumber(val: unknown): number | null {
@@ -1629,7 +2199,7 @@ export function sanitizeTaskProgress(task: WorkBuddyTask): WorkBuddyTask {
   const fallbackTarget = preset?.target ?? (title.includes('5') ? 5 : title.includes('3') ? 3 : 1);
   const safeTarget = toSafeNumber(task.targetProgress) ?? fallbackTarget;
   const safeCurrent =
-    toSafeNumber(task.currentProgress) ?? (task.status === '已领奖' ? safeTarget : 0);
+    toSafeNumber(task.currentProgress) ?? (task.status === '已领奖' || task.status === '待领奖' ? safeTarget : 0);
 
   return {
     ...task,
@@ -1644,7 +2214,12 @@ export function mapRawTaskToWorkBuddyTask(rt: any): WorkBuddyTask {
 
   const rawStatus = String(rt.accept_status || rt.status || '').toLowerCase();
   const isClaimed = rawStatus === 'claimed' || rawStatus === 'rewarded';
-  const isCompleted = rawStatus === 'completed' || rawStatus === 'finished' || rawStatus === 'done';
+  const isCompleted =
+    rawStatus === 'completed' ||
+    rawStatus === 'finished' ||
+    rawStatus === 'done' ||
+    rt.can_claim === true ||
+    rt.claimable === true;
 
   const progObj = rt.progress && typeof rt.progress === 'object' ? rt.progress : null;
   const progStrMatch =
@@ -1678,6 +2253,8 @@ export function mapRawTaskToWorkBuddyTask(rt: any): WorkBuddyTask {
     currentProgress = targetProgress;
   }
 
+  const isProgressFull = targetProgress > 0 && currentProgress >= targetProgress;
+
   const reward = toSafeNumber(rt.reward_credit) ?? toSafeNumber(rt.reward) ?? preset?.reward ?? 100;
   const officialDesc =
     rt.task_desc ||
@@ -1691,8 +2268,10 @@ export function mapRawTaskToWorkBuddyTask(rt: any): WorkBuddyTask {
   let status: WorkBuddyTask['status'] = '进行中';
   if (isClaimed) {
     status = '已领奖';
+  } else if (isCompleted || isProgressFull) {
+    status = '待领奖';
   } else if (title.includes('公众号')) {
-    status = isCompleted ? '进行中' : '需人工';
+    status = '需人工';
   } else if (rawStatus === 'not_accepted') {
     status = '未完成';
   } else {
@@ -1708,13 +2287,13 @@ export function mapRawTaskToWorkBuddyTask(rt: any): WorkBuddyTask {
     reward,
     recentResult: isClaimed
       ? '已领取奖励'
-      : isCompleted
-      ? '已达标可领奖'
+      : status === '待领奖'
+      ? '已达标待领奖 (点击[立即领奖])'
       : title.includes('公众号')
       ? '扫码关注满24h领奖'
       : '待执行 / 可点[一键完成]',
     reason: officialDesc,
-    autoExecutable: !title.includes('公众号'),
+    autoExecutable: !title.includes('公众号') || status === '待领奖',
   };
 }
 
