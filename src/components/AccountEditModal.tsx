@@ -67,7 +67,12 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
     setTestResult(null);
 
     try {
-      const summaryRes = await workbuddyRealApi.getResourceSummary(cleaned.credentials, cleaned.authType);
+      const headerCount = cleaned.extraHeaders ? Object.keys(cleaned.extraHeaders).length : 0;
+      const summaryRes = await workbuddyRealApi.getResourceSummary(
+        cleaned.credentials,
+        cleaned.authType,
+        cleaned.extraHeaders
+      );
       
       if (summaryRes.ok && summaryRes.data) {
         const resData = summaryRes.data.data || summaryRes.data;
@@ -80,9 +85,14 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
 
         if (liveCredit !== undefined && liveCredit !== null) {
           setPoints(Number(liveCredit));
+          const extraNote = cleaned.isExtractedFromCurl
+            ? `已自动提取 cURL 凭据${headerCount > 0 ? `及 ${headerCount} 个请求头` : ''}${cleaned.autoCompletedRealm ? ' (已自动补全 copilot 认证域)' : ''}！`
+            : cleaned.autoCompletedRealm
+            ? '已自动补全 copilot 认证域并验证成功！'
+            : '接口验证成功！';
           setTestResult({
             success: true,
-            message: `${cleaned.isExtractedFromCurl ? '已自动从 cURL 提取凭据并验证成功！' : '接口验证成功！'}官方实时积分已同步：${liveCredit} 积分`,
+            message: `${extraNote} 官方实时积分已同步：${liveCredit} 积分`,
             livePoints: Number(liveCredit),
           });
           return;
@@ -90,7 +100,11 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
       }
 
       // If resource summary is empty or failed, also try tasks endpoint to verify token validity
-      const taskRes = await workbuddyRealApi.getGrowthTasks(cleaned.credentials, cleaned.authType);
+      const taskRes = await workbuddyRealApi.getGrowthTasks(
+        cleaned.credentials,
+        cleaned.authType,
+        cleaned.extraHeaders
+      );
       if (taskRes.ok) {
         setTestResult({
           success: true,
@@ -102,7 +116,8 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
       if (summaryRes.status === 401 || taskRes.status === 401) {
         setTestResult({
           success: false,
-          message: '官方接口返回 401 Unauthorized：Cookie 或 Token 已过期，请重新在浏览器复制最新的 session 或 cURL 命令。',
+          message:
+            '官方接口返回 401 Unauthorized：Cookie 或 Token 已过期，请重新在浏览器复制最新的 session 或完整 cURL 命令。',
         });
       } else {
         setTestResult({
@@ -135,6 +150,7 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
       region,
       authType: cleaned.authType,
       credentials: cleaned.credentials,
+      extraHeaders: cleaned.extraHeaders || account.extraHeaders,
       proxyUrl: proxyUrl.trim() || undefined,
       points: Number(points) || 0,
       status: testResult?.success ? '正常' : account.status,

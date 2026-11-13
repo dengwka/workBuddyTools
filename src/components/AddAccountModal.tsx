@@ -57,7 +57,12 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
     setTestResult(null);
 
     try {
-      const summaryRes = await workbuddyRealApi.getResourceSummary(cleaned.credentials, cleaned.authType);
+      const headerCount = cleaned.extraHeaders ? Object.keys(cleaned.extraHeaders).length : 0;
+      const summaryRes = await workbuddyRealApi.getResourceSummary(
+        cleaned.credentials,
+        cleaned.authType,
+        cleaned.extraHeaders
+      );
       if (summaryRes.ok && summaryRes.data) {
         const resData = summaryRes.data.data || summaryRes.data;
         const liveCredit =
@@ -69,15 +74,24 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
 
         if (liveCredit !== undefined && liveCredit !== null) {
           setPoints(Number(liveCredit));
+          const extraNote = cleaned.isExtractedFromCurl
+            ? `已自动提取 cURL 凭据${headerCount > 0 ? `及 ${headerCount} 个请求头` : ''}${cleaned.autoCompletedRealm ? ' (已自动补全 copilot 认证域)' : ''}！`
+            : cleaned.autoCompletedRealm
+            ? '已自动补全 copilot 认证域并验证成功！'
+            : '接口验证成功！';
           setTestResult({
             success: true,
-            message: `${cleaned.isExtractedFromCurl ? '已自动从 cURL 提取凭据并验证成功！' : '接口验证成功！'}官方实时积分：${liveCredit}`,
+            message: `${extraNote} 官方实时积分：${liveCredit}`,
           });
           return;
         }
       }
 
-      const taskRes = await workbuddyRealApi.getGrowthTasks(cleaned.credentials, cleaned.authType);
+      const taskRes = await workbuddyRealApi.getGrowthTasks(
+        cleaned.credentials,
+        cleaned.authType,
+        cleaned.extraHeaders
+      );
       if (taskRes.ok) {
         setTestResult({
           success: true,
@@ -89,7 +103,8 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
       if (summaryRes.status === 401 || taskRes.status === 401) {
         setTestResult({
           success: false,
-          message: '官方接口返回 401 Unauthorized：请确认复制的 Cookie 包含完整 session（或直接粘贴整段 cURL）。',
+          message:
+            '官方接口返回 401 Unauthorized：该 session 已过期或缺少认证头，请在浏览器 F12 复制最新 get-user-resource-summary 的完整 cURL 粘贴重试。',
         });
       } else {
         setTestResult({
@@ -125,6 +140,7 @@ export const AddAccountModal: React.FC<AddAccountModalProps> = ({ isOpen, onClos
       points: Number(points) || 0,
       authType: cleaned.authType,
       credentials: cleaned.credentials || 'mock_credentials',
+      extraHeaders: cleaned.extraHeaders,
       proxyUrl: proxyUrl.trim() || undefined,
       lastUpdated: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
       catTravel: {

@@ -32,7 +32,8 @@ export interface WorkBuddyAccount {
   status: AccountStatus;
   points: number;
   authType: 'cookie' | 'token';
-  credentials: string; // Cookie string or token
+  credentials: string; // Cookie string, token, or cURL
+  extraHeaders?: Record<string, string>;
   proxyUrl?: string;
   lastUpdated: string;
   catTravel: CatTravelInfo;

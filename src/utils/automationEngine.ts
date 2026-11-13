@@ -61,9 +61,10 @@ export class AutomationEngine {
 
       const creds = account.credentials || '';
       const authType = account.authType || 'cookie';
+      const extraHeaders = account.extraHeaders;
 
       // 1. Fetch real user profile
-      const userProfileRes = await workbuddyRealApi.getUserInfo(creds, authType);
+      const userProfileRes = await workbuddyRealApi.getUserInfo(creds, authType, extraHeaders);
       if (userProfileRes.ok && userProfileRes.data) {
         const u = userProfileRes.data.data || userProfileRes.data;
         if (u.nickname || u.username || u.name) {
@@ -83,7 +84,7 @@ export class AutomationEngine {
       }
 
       // 2. Fetch real user points & credits balance
-      const resourceRes = await workbuddyRealApi.getResourceSummary(creds, authType);
+      const resourceRes = await workbuddyRealApi.getResourceSummary(creds, authType, extraHeaders);
       if (resourceRes.ok && resourceRes.data) {
         const resData = resourceRes.data.data || resourceRes.data;
         const totalPoints =
@@ -349,10 +350,11 @@ export class AutomationEngine {
       }
 
       // 8. Re-fetch final points to reflect claimed credits
-      const finalResourceRes = await workbuddyRealApi.getResourceSummary(creds, authType);
+      const finalResourceRes = await workbuddyRealApi.getResourceSummary(creds, authType, extraHeaders);
       if (finalResourceRes.ok && finalResourceRes.data) {
         const fData = finalResourceRes.data.data || finalResourceRes.data;
         const updatedTotal =
+          fData.TotalCredits ??
           fData.total_credit ??
           fData.balance ??
           fData.platform_reward_credit ??

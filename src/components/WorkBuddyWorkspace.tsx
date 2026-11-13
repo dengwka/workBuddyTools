@@ -217,7 +217,11 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
     }
 
     try {
-      const summaryRes = await workbuddyRealApi.getResourceSummary(account.credentials, account.authType);
+      const summaryRes = await workbuddyRealApi.getResourceSummary(
+        account.credentials,
+        account.authType,
+        account.extraHeaders
+      );
       if (summaryRes.ok && summaryRes.data) {
         const resData = summaryRes.data.data || summaryRes.data;
         const liveCredit =
@@ -310,7 +314,11 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = ({
     if (!currentAccount || isRunning) return;
     addLog('info', currentAccount.id, `[${currentAccount.id}] 正在查询猫猫旅行实时状态 (/status)...`);
     try {
-      const res = await workbuddyRealApi.getCatTravelStatus(currentAccount.credentials, currentAccount.authType);
+      const res = await workbuddyRealApi.getCatTravelStatus(
+        currentAccount.credentials,
+        currentAccount.authType,
+        currentAccount.extraHeaders
+      );
       const timeStr = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
       if (res.ok && res.data) {
         const t = res.data.data || res.data;
