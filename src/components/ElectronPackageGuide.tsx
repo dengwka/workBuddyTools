@@ -113,9 +113,9 @@ npm run build:exe
 npm run build:mac
 
 # 输出产物位于 release/ 目录:
-# - WorkBuddy 账号日常工具-1.1.0-win-x64.exe
-# - WorkBuddy 账号日常工具-1.1.0-mac-x64.dmg (Intel)
-# - WorkBuddy 账号日常工具-1.1.0-mac-arm64.dmg (M芯片)`}
+# - workbuddyTools-Setup-1.3.0.exe
+# - workbuddyTools-1.3.0-x64.dmg (Intel)
+# - workbuddyTools-1.3.0-arm64.dmg (M芯片)`}
             </pre>
           </div>
 

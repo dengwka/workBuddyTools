@@ -744,7 +744,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
           </div>
 
           <div className="flex items-center gap-2">
-            <span className="font-semibold text-slate-100 text-sm tracking-tight">WorkBuddy 账号日常工具</span>
+            <span className="font-semibold text-slate-100 text-sm tracking-tight">WorkBuddy 自动化工具</span>
 
             {/* Version Badge & Red Dot Update Trigger */}
             <button

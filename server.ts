@@ -65,7 +65,7 @@ async function fetchLatestReleaseInfo() {
     const apiRes = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
       headers: {
         Accept: 'application/vnd.github+json',
-        'User-Agent': 'WorkBuddyTools-Updater/1.2.1',
+        'User-Agent': 'WorkBuddyTools-Updater/1.3.0',
       },
       signal: AbortSignal.timeout(10000),
     });
@@ -89,7 +89,7 @@ async function fetchLatestReleaseInfo() {
     try {
       const res = await fetch(pageUrl, {
         redirect: 'follow',
-        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.2.1' },
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.0' },
         signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) continue;
@@ -107,7 +107,7 @@ async function fetchLatestReleaseInfo() {
         : `https://github.com/${GITHUB_REPO}/releases/expanded_assets/${tagName}`;
 
       const expRes = await fetch(expandedUrl, {
-        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.2.1' },
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.0' },
         signal: AbortSignal.timeout(10000),
       });
       const expHtml = expRes.ok ? await expRes.text() : html;
@@ -142,7 +142,7 @@ async function fetchLatestReleaseInfo() {
       if (assets.length > 0) {
         return {
           tag_name: tagName,
-          name: `WorkBuddy 账号日常工具 ${tagName}`,
+          name: `WorkBuddy 自动化工具 ${tagName}`,
           body: '',
           published_at: new Date().toISOString(),
           html_url: `https://github.com/${GITHUB_REPO}/releases/tag/${tagName}`,
@@ -205,7 +205,7 @@ async function runServerStreamUpdate(job: UpdateJobState, downloadUrl: string, m
       try {
         res = await fetch(candidate.url, {
           redirect: 'follow',
-          headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.2.1' },
+          headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.3.0' },
           signal: controller.signal,
         });
       } finally {

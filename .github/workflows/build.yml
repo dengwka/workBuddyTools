@@ -9,7 +9,7 @@ on:
       version:
         description: 'Release Version'
         required: false
-        default: 'v1.2.1'
+        default: 'v1.3.0'
 
 permissions:
   contents: write
@@ -83,7 +83,7 @@ jobs:
             release/*.zip
 
   publish-release:
-    name: Publish GitHub Release (v1.2.1)
+    name: Publish GitHub Release (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.0' }})
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
@@ -110,8 +110,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name || inputs.version || 'v1.2.1' }}
-          name: WorkBuddy 账号日常工具 ${{ github.ref_name || inputs.version || 'v1.2.1' }} 正式发布
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.0' }}
+          name: WorkBuddy 自动化工具 ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.0' }} 正式发布
           files: |
             dist-release/*.exe
             dist-release/*.dmg
@@ -119,23 +119,22 @@ jobs:
           draft: false
           prerelease: false
           body: |
-            ### 🌟 WorkBuddy 账号日常工具 v1.2.1 正式发布
+            ### 🌟 WorkBuddy 自动化工具 ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.0' }} 正式发布
 
-            本版本全面对接 WorkBuddy 官方生产环境真实业务 API 与 `/v2/report` 埋点协议，内置「腾讯 WorkBuddy」官方公众号高清扫码关注卡片，修复官网跳转路由与 `NaN/1` 进度显示，并支持日志控制台默认收起与鼠标自由拖拽调节高度：
+            本版本正式更名为 **WorkBuddy 自动化工具**，全面升级成长中心自动领奖、专家与对话任务真实执行链路，并重磅推出应用内流式下载与自动安装升级器：
 
-            #### 🚀 核心升级内容 (v1.2.1)
-            1. **真实业务 API + `/v2/report` 埋点一键完成（告别虚辅助完成）**：
-               - 对接官方 `/v2/report` (`CloudProductMetricsReporter`)、`/console/as/conversations/`、`/api/v2/open-platform/asset-shares/c2c/channels`、`/v2/as/scheduler/tasks`、`/billing/meter/daily-checkin`、`/v2/activity/growth/subscribe-task/status` 等真实接口；
-               - 任务列表右侧操作升级为 **「一键完成」**，自动执行云端对话/分享/模板/定时任务创建并自动清理临时会话。
-            2. **「关注腾讯 WorkBuddy 官方公众号」内置官方二维码直接扫**：
-               - 任务右侧提供 **「扫码关注」** 按钮，点开直接展示「腾讯 WorkBuddy」官方公众号二维码，手机微信扫一扫即可关注；
-               - 点击「同步关注状态并立即领奖」自动调用 `/v2/activity/growth/subscribe-task/status` 同步关注状态并领奖。
-            3. **修复官网跳转 404 与 `NaN/1` 进度显示**：
-               - 修复原 `/experts` 404 路由，更新为官方真实工作台 `https://www.workbuddy.cn/app` 与成长中心 `https://www.workbuddy.cn/profile/growth-center`；
-               - 清洗任务进度数值，彻底消除 `NaN/1` 显示。
-            4. **UI 细节与 `kuaixuntong` 同款安装包方案**：
-               - 底部操作栏防换行（点击运行时文字绝不折行）；
-               - 底部日志控制台默认关闭收起，支持按住顶部边缘鼠标上下拖动自由调节高度；
-               - 采用 `kuaixuntong` 同款 `workbuddyTools-Setup-1.2.1.exe` 标准 NSIS 安装向导与多源流式直装升级器。
+            #### 🚀 核心升级内容 (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.3.0' }})
+            1. **品牌升级为「WorkBuddy 自动化工具」**：
+               - 统一客户端窗口标题、桌面快捷方式、Electron 安装包及 GitHub Releases 发布标题格式为 `WorkBuddy 自动化工具 vxxx 正式发布`。
+            2. **已完成任务自动识别与自动领奖闭环**：
+               - 自动识别官方成长中心进度已满的 `待领奖` 任务，一键全自动运行优先触发领奖并支持列表内「立即领奖」；
+               - 补全成长中心 Web 请求标头与 Cookie 身份提取，兼容多种官方 `/claim`、`/receive` 领奖接口及埋点上报，失败时输出清晰诊断日志。
+            3. **召回专家 / 专家团 / 对话 / 技能任务真实链路修复**：
+               - 接入官方专家搜索、专家团队与排行榜真实接口，移除占位 ID，使用真实官方专家/团队 ID 发起召回；
+               - 云端对话升级为「创建会话 + 发送真实消息对话 + 进度核验后延迟清理」，彻底解决原建完即删导致 `0/1`、`0/3`、`0/5` 无法完成的问题；
+               - 拆分并完善「尝鲜热门技能」「体验『资料库』」「和 AI 聊天 5 次」「领取一只 Buddy」等任务执行机制与助手引导。
+            4. **应用内流式下载与自动安装升级器（彻底解决 404 浏览器跳转）**：
+               - 实时拉取 GitHub Releases 真实平台资产列表，点击更新后直接在应用内通过多节点镜像（`GHFast` / `GH-Proxy` / GitHub 直连）流式下载，全程不再跳转打开外部浏览器；
+               - 更新按钮下方实时显示下载百分比、体积、速率、剩余时间与阶段状态，完整性校验通过后自动拉起 `.exe` / `.dmg` 系统安装程序。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

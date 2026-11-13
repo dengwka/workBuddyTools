@@ -1,6 +1,6 @@
 {
   "appId": "cn.antigravity.workbuddytools",
-  "productName": "WorkBuddy 账号日常工具",
+  "productName": "WorkBuddy 自动化工具",
   "copyright": "Copyright © 2026",
   "directories": {
     "output": "release"
@@ -29,7 +29,7 @@
     "allowToChangeInstallationDirectory": true,
     "createDesktopShortcut": true,
     "createStartMenuShortcut": true,
-    "shortcutName": "WorkBuddy 账号日常工具",
+    "shortcutName": "WorkBuddy 自动化工具",
     "artifactName": "workbuddyTools-Setup-${version}.${ext}",
     "deleteAppDataOnUninstall": false
   },

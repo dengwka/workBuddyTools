@@ -13,7 +13,7 @@ import {
   Zap,
 } from 'lucide-react';
 
-export const CURRENT_APP_VERSION = '1.2.1';
+export const CURRENT_APP_VERSION = '1.3.0';
 export const GITHUB_REPO = 'dengwka/workBuddyTools';
 
 export interface GitHubReleaseAsset {

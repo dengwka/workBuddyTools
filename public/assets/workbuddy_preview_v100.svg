@@ -29,8 +29,8 @@
     <g transform="translate(18, 10)">
       <rect width="22" height="22" rx="5" fill="url(#header-grad)"/>
       <text x="11" y="16" font-family="-apple-system, sans-serif" font-weight="bold" font-size="12" fill="#ffffff" text-anchor="middle">W</text>
-      <text x="32" y="16" font-family="-apple-system, sans-serif" font-weight="600" font-size="13" fill="#f8fafc">WorkBuddy 账号日常工具</text>
-      <text x="180" y="16" font-family="monospace" font-size="11" fill="#64748b">v1.0.0</text>
+      <text x="32" y="16" font-family="-apple-system, sans-serif" font-weight="600" font-size="13" fill="#f8fafc">WorkBuddy 自动化工具</text>
+      <text x="165" y="16" font-family="monospace" font-size="11" fill="#64748b">v1.3.0</text>
     </g>
 
     <!-- Header Actions -->

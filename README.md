@@ -1,11 +1,11 @@
-# WorkBuddy 账号日常工具 (workbuddyTools)
+# WorkBuddy 自动化工具 (workbuddyTools)
 
 <p align="center">
-  <img src="public/assets/workbuddy_preview_v100.svg" alt="WorkBuddy 账号日常工具 v1.1.0" width="860" style="border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.5);" />
+  <img src="public/assets/workbuddy_preview_v100.svg" alt="WorkBuddy 自动化工具 v1.3.0" width="860" style="border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.5);" />
 </p>
 
 <p align="center">
-  <strong>专为腾讯 WorkBuddy (workbuddy.cn) 打造的多账号自动化日常任务与猫猫旅行助手</strong><br />
+  <strong>专为腾讯 WorkBuddy (workbuddy.cn) 打造的多账号自动化任务与猫猫旅行助手</strong><br />
   支持本地浏览器极速访问，支持打包为 <strong>Windows EXE</strong>、<strong>macOS Intel (x64)</strong> 与 <strong>macOS Apple Silicon (M芯片 arm64)</strong> 全平台桌面端，真实对接官方成长中心，一键完成每日任务并领奖入账。
 </p>
 
@@ -22,7 +22,7 @@
 
 ## 📖 项目简介
 
-**WorkBuddy 账号日常工具 (workbuddyTools)** 是一款高颜值、生产级的一键自动化任务管理客户端。针对腾讯 WorkBuddy 成长中心每日繁琐的签到、模板套用、专家对话及猫猫旅行等日常需求，本工具提供**全自动批量接取、执行打卡、结果诊断与奖励领取**全流程闭环，助你轻松积累平台积分与成长能量。
+**WorkBuddy 自动化工具 (workbuddyTools)** 是一款高颜值、生产级的一键自动化任务管理客户端。针对腾讯 WorkBuddy 成长中心每日繁琐的签到、模板套用、专家对话及猫猫旅行等高频任务需求，本工具提供**全自动批量接取、执行打卡、结果诊断与自动领奖**全流程闭环，助你轻松积累平台积分与成长能量。
 
 ---
 
@@ -55,7 +55,7 @@
 ## 🛠️ 系统技术架构
 
 <p align="center">
-  <img src="docs/architecture.svg" alt="WorkBuddy 账号日常工具 - 系统技术架构图" width="860" style="border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.4);" />
+  <img src="docs/architecture.svg" alt="WorkBuddy 自动化工具 - 系统技术架构图" width="860" style="border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.4);" />
 </p>
 
 ---
@@ -64,10 +64,10 @@
 
 ### 方式一：直接下载全平台桌面客户端（推荐）
 
-前往项目的 [Releases 发布页面](https://github.com/dengwka/workBuddyTools/releases) 下载最新版本 (`v1.1.0`) 的打包产物（已支持 3 大平台架构）：
-- 🪟 **Windows (x64)**: `WorkBuddy 账号日常工具-1.1.0-win-x64.exe`（安装包与便携版）
-- 🍎 **macOS Intel 芯片 (x64)**: `WorkBuddy 账号日常工具-1.1.0-mac-x64.dmg`
-- 🍏 **macOS Apple Silicon M1/M2/M3/M4 (arm64)**: `WorkBuddy 账号日常工具-1.1.0-mac-arm64.dmg`
+前往项目的 [Releases 发布页面](https://github.com/dengwka/workBuddyTools/releases) 下载最新版本 (`v1.3.0`) 的打包产物（已支持 3 大平台架构）：
+- 🪟 **Windows (x64)**: `workbuddyTools-Setup-1.3.0.exe`（NSIS 安装包）
+- 🍎 **macOS Intel 芯片 (x64)**: `workbuddyTools-1.3.0-x64.dmg`
+- 🍏 **macOS Apple Silicon M1/M2/M3/M4 (arm64)**: `workbuddyTools-1.3.0-arm64.dmg`
 
 ### 方式二：本地源码启动（Web 模式）
 
