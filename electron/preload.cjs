@@ -5,7 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   arch: process.arch,
   isElectron: true,
-  appVersion: '1.0.0',
+  appVersion: '1.0.1',
   proxyRequest: (payload) => ipcRenderer.invoke('workbuddy:proxy', payload),
   openExternal: (url) => ipcRenderer.invoke('workbuddy:open-external', url),
   getSystemInfo: () => ipcRenderer.invoke('workbuddy:get-system-info'),
@@ -16,13 +16,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveLicenseConfig: (payload) => ipcRenderer.invoke('workbuddy:license-save', payload),
   requestLicenseApi: (payload) => ipcRenderer.invoke('workbuddy:license-request', payload),
   windowMinimize: () => ipcRenderer.invoke('workbuddy:window-minimize'),
+  windowMinimizeToTray: () => ipcRenderer.invoke('workbuddy:window-minimize-to-tray'),
   windowToggleMaximize: () => ipcRenderer.invoke('workbuddy:window-toggle-maximize'),
   windowIsMaximized: () => ipcRenderer.invoke('workbuddy:window-is-maximized'),
   windowClose: () => ipcRenderer.invoke('workbuddy:window-close'),
+  windowQuit: () => ipcRenderer.invoke('workbuddy:window-quit'),
   onWindowMaximizedChanged: (callback) => {
     const listener = (_event, isMax) => callback(Boolean(isMax));
     ipcRenderer.on('workbuddy:window-maximized-changed', listener);
     return () => ipcRenderer.removeListener('workbuddy:window-maximized-changed', listener);
+  },
+  onTrayStateChanged: (callback) => {
+    const listener = (_event, inTray) => callback(Boolean(inTray));
+    ipcRenderer.on('workbuddy:tray-state-changed', listener);
+    return () => ipcRenderer.removeListener('workbuddy:tray-state-changed', listener);
   },
   onUpdateProgress: (callback) => {
     const listener = (_event, data) => callback(data);

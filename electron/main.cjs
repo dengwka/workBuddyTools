@@ -1,5 +1,5 @@
 // Electron Main Process for WorkBuddy Tools (with kuaixuntong-style Stream Updater & CORS Proxy)
-const { app, BrowserWindow, ipcMain, shell, Menu, net } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, net, Tray, nativeImage } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -9,6 +9,9 @@ const tls = require('tls');
 const crypto = require('crypto');
 
 let mainWindow = null;
+let tray = null;
+let isQuitting = false;
+let hasShownTrayBalloon = false;
 
 function ensureStatelessLoginRealmCookies(cookieStr) {
   const currentCookie = String(cookieStr || '').trim();
@@ -131,7 +134,7 @@ async function fetchLatestReleaseInfo() {
     const apiRes = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
       headers: {
         Accept: 'application/vnd.github+json',
-        'User-Agent': 'WorkBuddyTools-Updater/1.0.0',
+        'User-Agent': 'WorkBuddyTools-Updater/1.0.1',
       },
       signal: AbortSignal.timeout(10000),
     });
@@ -155,7 +158,7 @@ async function fetchLatestReleaseInfo() {
     try {
       const res = await fetch(pageUrl, {
         redirect: 'follow',
-        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.0' },
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.1' },
         signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) continue;
@@ -173,7 +176,7 @@ async function fetchLatestReleaseInfo() {
         : `https://github.com/${GITHUB_REPO}/releases/expanded_assets/${tagName}`;
 
       const expRes = await fetch(expandedUrl, {
-        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.0' },
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.1' },
         signal: AbortSignal.timeout(10000),
       });
       const expHtml = expRes.ok ? await expRes.text() : html;
@@ -225,7 +228,7 @@ async function executeStreamDownload(targetUrl, originalFileName, nodeName, emit
   try {
     res = await fetch(targetUrl, {
       redirect: 'follow',
-      headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.0' },
+      headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.1' },
       signal: controller.signal,
     });
   } finally {
@@ -896,7 +899,7 @@ function postJsonViaHttpConnectProxy(targetUrl, bodyStr, proxyUrl, timeoutMs) {
           headers: {
             'Content-Type': 'application/json',
             Accept: 'application/json',
-            'User-Agent': 'WorkBuddyTools-License/1.0.0',
+            'User-Agent': 'WorkBuddyTools-License/1.0.1',
             'Content-Length': Buffer.byteLength(bodyStr),
           },
           timeout: timeoutMs,
@@ -948,7 +951,7 @@ function postJsonDirectIpv4(targetUrl, bodyStr, timeoutMs) {
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          'User-Agent': 'WorkBuddyTools-License/1.0.0',
+          'User-Agent': 'WorkBuddyTools-License/1.0.1',
           'Content-Length': Buffer.byteLength(bodyStr),
         },
         timeout: timeoutMs,
@@ -1036,7 +1039,7 @@ ipcMain.handle('workbuddy:license-request', async (_event, { endpoint, body, pro
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          'User-Agent': 'WorkBuddyTools-License/1.0.0',
+          'User-Agent': 'WorkBuddyTools-License/1.0.1',
         },
         body: bodyStr,
         signal: controller.signal,
@@ -1093,6 +1096,16 @@ ipcMain.handle('workbuddy:window-minimize', () => {
   }
 });
 
+ipcMain.handle('workbuddy:window-minimize-to-tray', () => {
+  hideToTray();
+  return true;
+});
+
+ipcMain.handle('workbuddy:window-quit', () => {
+  isQuitting = true;
+  app.quit();
+});
+
 ipcMain.handle('workbuddy:window-toggle-maximize', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   if (mainWindow.isMaximized()) {
@@ -1110,9 +1123,102 @@ ipcMain.handle('workbuddy:window-is-maximized', () => {
 
 ipcMain.handle('workbuddy:window-close', () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.close();
+    hideToTray();
   }
 });
+
+function hideToTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.hide();
+  if (process.platform === 'win32') {
+    mainWindow.setSkipTaskbar(true);
+  }
+  if (!mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('workbuddy:tray-state-changed', true);
+  }
+  if (tray && process.platform === 'win32' && !hasShownTrayBalloon) {
+    hasShownTrayBalloon = true;
+    try {
+      tray.displayBalloon({
+        iconType: 'info',
+        title: 'WorkBuddy 自动化工具',
+        content: '已最小化到右下角托盘，每日自动旅行与签到任务将在后台持续运行。',
+      });
+    } catch {
+      // ignore on unsupported systems
+    }
+  }
+}
+
+function restoreFromTray() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (process.platform === 'win32') {
+    mainWindow.setSkipTaskbar(false);
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.show();
+  mainWindow.focus();
+  if (!mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('workbuddy:tray-state-changed', false);
+  }
+}
+
+function createTray() {
+  if (tray) return tray;
+  const iconFile = process.platform === 'win32' ? 'icons/icon.ico' : 'icons/icon.png';
+  const iconPath = path.join(__dirname, iconFile);
+  let trayImage = nativeImage.createFromPath(iconPath);
+  if (trayImage.isEmpty()) {
+    const fallbackPath = path.join(__dirname, 'icons/icon.png');
+    trayImage = nativeImage.createFromPath(fallbackPath);
+  }
+  if (process.platform === 'darwin' && !trayImage.isEmpty()) {
+    trayImage = trayImage.resize({ width: 18, height: 18 });
+  } else if (process.platform === 'win32' && !trayImage.isEmpty()) {
+    trayImage = trayImage.resize({ width: 16, height: 16 });
+  }
+
+  tray = new Tray(trayImage);
+  tray.setToolTip('WorkBuddy 自动化工具 v1.0.1 · 后台自动托管中');
+
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: '显示主界面',
+      click: () => restoreFromTray(),
+    },
+    {
+      label: '隐藏到右下角托盘',
+      click: () => hideToTray(),
+    },
+    { type: 'separator' },
+    {
+      label: '退出程序',
+      click: () => {
+        isQuitting = true;
+        app.quit();
+      },
+    },
+  ]);
+
+  tray.setContextMenu(contextMenu);
+  tray.on('click', () => {
+    if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible()) {
+      restoreFromTray();
+    } else if (process.platform === 'win32') {
+      mainWindow.focus();
+    }
+  });
+  tray.on('double-click', () => {
+    restoreFromTray();
+  });
+
+  return tray;
+}
 
 function createWindow() {
   if (process.platform !== 'darwin') {
@@ -1131,7 +1237,7 @@ function createWindow() {
     resizable: true,
     maximizable: true,
     minimizable: true,
-    title: 'WorkBuddy 自动化工具 v1.0.0',
+    title: 'WorkBuddy 自动化工具 v1.0.1',
     icon: path.join(__dirname, iconFile),
     backgroundColor: '#020617',
     webPreferences: {
@@ -1155,6 +1261,13 @@ function createWindow() {
     }
   });
 
+  mainWindow.on('close', (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      hideToTray();
+    }
+  });
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: 'deny' };
@@ -1168,14 +1281,30 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(() => {
-  createWindow();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    restoreFromTray();
   });
-});
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+  app.on('before-quit', () => {
+    isQuitting = true;
+  });
+
+  app.whenReady().then(() => {
+    createTray();
+    createWindow();
+
+    app.on('activate', () => {
+      restoreFromTray();
+    });
+  });
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin' && isQuitting) {
+      app.quit();
+    }
+  });
+}

@@ -73,6 +73,23 @@ export function roundPoints(val: unknown): number {
   return Math.round(num * 100) / 100;
 }
 
+export function getLocalDateKey(date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export function formatFullDateTime(date = new Date()): string {
+  const y = date.getFullYear();
+  const mo = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  const h = String(date.getHours()).padStart(2, '0');
+  const mi = String(date.getMinutes()).padStart(2, '0');
+  const s = String(date.getSeconds()).padStart(2, '0');
+  return `${y}-${mo}-${d} ${h}:${mi}:${s}`;
+}
+
 export function formatAccountLabel(accountId: string, nickname?: string): string {
   const cleanId = String(accountId || '').trim();
   const shortId = cleanId.length > 12 ? cleanId.slice(0, 8) : cleanId;

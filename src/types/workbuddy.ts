@@ -24,6 +24,15 @@ export interface CatTravelInfo {
   autoTravel: boolean;
   destination?: string;
   remainingSeconds?: number;
+  lastCompletedAt?: string;   // 完整完成时间 YYYY-MM-DD HH:mm:ss
+  lastCompletedDate?: string; // 完成日期 YYYY-MM-DD（用于跨天判定与防重）
+  lastDepartedAt?: string;    // 最近出发时间 YYYY-MM-DD HH:mm:ss
+}
+
+export interface DailyCheckinInfo {
+  lastCheckinDate?: string;   // 最近签到日期 YYYY-MM-DD
+  lastCheckinAt?: string;     // 最近签到完整时间 YYYY-MM-DD HH:mm:ss
+  streakDays?: number;        // 连续活跃天数
 }
 
 export interface WorkBuddyAccount {
@@ -38,6 +47,8 @@ export interface WorkBuddyAccount {
   proxyUrl?: string;
   lastUpdated: string;
   catTravel: CatTravelInfo;
+  autoDailyCheckin?: boolean; // 是否参与每天自动签到（默认开启）
+  dailyCheckin?: DailyCheckinInfo;
   tasks: WorkBuddyTask[];
 }
 

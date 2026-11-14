@@ -64,10 +64,10 @@
 
 ### 方式一：直接下载全平台桌面客户端（推荐）
 
-前往项目的 [Releases 发布页面](https://github.com/dengwka/workBuddyTools/releases) 下载最新版本 (`v1.0.0`) 的打包产物（已支持 3 大平台架构）：
-- 🪟 **Windows (x64)**: `workbuddyTools-Setup-1.0.0.exe`（NSIS 安装包）
-- 🍎 **macOS Intel 芯片 (x64)**: `workbuddyTools-1.0.0-x64.dmg`
-- 🍏 **macOS Apple Silicon M1/M2/M3/M4 (arm64)**: `workbuddyTools-1.0.0-arm64.dmg`
+前往项目的 [Releases 发布页面](https://github.com/dengwka/workBuddyTools/releases) 下载最新版本 (`v1.0.1`) 的打包产物（已支持 3 大平台架构）：
+- 🪟 **Windows (x64)**: `workbuddyTools-Setup-1.0.1.exe`（NSIS 安装包）
+- 🍎 **macOS Intel 芯片 (x64)**: `workbuddyTools-1.0.1-x64.dmg`
+- 🍏 **macOS Apple Silicon M1/M2/M3/M4 (arm64)**: `workbuddyTools-1.0.1-arm64.dmg`
 
 ### 方式二：本地源码启动（Web 模式）
 

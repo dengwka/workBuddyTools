@@ -9,7 +9,7 @@ on:
       version:
         description: 'Release Version'
         required: false
-        default: 'v1.0.0'
+        default: 'v1.0.1'
 
 permissions:
   contents: write
@@ -83,7 +83,7 @@ jobs:
             release/*.zip
 
   publish-release:
-    name: Publish GitHub Release (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.0.0' }})
+    name: Publish GitHub Release (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.0.1' }})
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
@@ -110,8 +110,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.0.0' }}
-          name: WorkBuddy 自动化工具 ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.0.0' }} 正式发布
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.0.1' }}
+          name: WorkBuddy 自动化工具 ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.0.1' }} 正式发布
           files: |
             dist-release/*.exe
             dist-release/*.dmg
@@ -119,18 +119,16 @@ jobs:
           draft: false
           prerelease: false
           body: |
-            ### 🌟 WorkBuddy 自动化工具 ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.0.0' }} 正式发布
+            ### 🌟 WorkBuddy 自动化工具 ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.0.1' }} 正式发布
 
-            本版本为 **WorkBuddy 自动化工具 v1.0.0** 首个正式发行版本，集成 License 软件授权校验、多账号全链路任务自动执行与自动领奖、多源在线流式升级及跨平台桌面端打包能力：
-
-            #### 🚀 核心功能亮点 (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.version || 'v1.0.0' }})
-            1. **License 软件授权与弱网不断流机制**：
-               - 安装与启动支持先跳过预览，核心自动化业务执行与账号管理受 License 授权校验保护，激活成功后实时展示可用剩余天数；
-               - 支持在线授权码激活绑定与离线 `.lic` 证书验签，内置系统代理自适应、IPv4 优先与 35 秒长超时多通道探测，外网波动时自动启用本地宽限授权不中断使用。
-            2. **成长中心任务全链路自动化与自动领奖**：
-               - 支持每日签到活跃、猫猫旅行自动启程与归来领奖、官方专家召回对话、模板/自动化/技能/资料库等任务真实执行并自动同步官方实时积分；
-               - 支持无状态单账号认证与严格的多账号权限隔离（仅执行已勾选账号，日志与积分按账号独立隔离，支持一键复制日志）。
-            3. **应用内免浏览器流式更新**：
-               - 点击版本升级自动识别当前系统环境（Windows x64 / macOS arm64 / macOS x64）并检测最新版本，内置多源加速节点流式下载与自动拉起安装。
+            #### ✨ v1.0.1 更新内容
+            1. **桌面端支持最小化到右下角系统托盘**：
+               - 新增右下角系统托盘图标与右键菜单（显示主界面 / 隐藏到右下角托盘 / 退出程序），支持单实例唤醒；
+               - 标题栏新增「最小化到右下角托盘」快捷按钮，点击关闭按钮时自动隐藏到右下角托盘继续后台运行。
+            2. **猫猫旅行记住完成时间 & 每日自动旅行+签到**：
+               - 持久化记录猫猫旅行完整完成时间 (`YYYY-MM-DD HH:mm:ss`) 与每日签到时间、连续活跃天数；
+               - 跨天 0 点后自动刷新任务状态并按账号后台自动完成每日猫猫旅行与签到打卡，避免漏签或重复执行。
+            3. **完整功能继承**：
+               - 集成 License 软件授权校验与弱网宽限不断流、成长中心多账号全链路自动执行与领奖、应用内免浏览器流式升级。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

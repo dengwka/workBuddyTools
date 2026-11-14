@@ -8,7 +8,7 @@ export const CURRENT_PROJECT_FILES: ProjectFile[] = [
     content: `{
   "name": "workbuddy-tools",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -192,7 +192,7 @@ function createWindow() {
     height: 840,
     minWidth: 1024,
     minHeight: 700,
-    title: 'WorkBuddy 自动化工具 v1.0.0',
+    title: 'WorkBuddy 自动化工具 v1.0.1',
     backgroundColor: '#0f172a',
     webPreferences: {
       nodeIntegration: false,
@@ -226,7 +226,7 @@ app.on('window-all-closed', () => {
 contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   isElectron: true,
-  appVersion: '1.1.0',
+  appVersion: '1.0.1',
   proxyRequest: (payload) => ipcRenderer.invoke('workbuddy:proxy', payload),
 });`,
   },
@@ -263,7 +263,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   {
     path: 'README.md',
     language: 'markdown',
-    content: `# WorkBuddy 自动化工具 (workbuddyTools v1.0.0)
+    content: `# WorkBuddy 自动化工具 (workbuddyTools v1.0.1)
 
 > 真实对接官方成长中心与猫猫旅行 API，支持多账号一键自动化，支持 Windows EXE 与 macOS (Intel / M芯片) 桌面客户端。
 `,
@@ -282,7 +282,7 @@ export async function downloadProjectZip(customFiles?: ProjectFile[]): Promise<v
   const url = URL.createObjectURL(content);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `workbuddyTools-v1.1.0.zip`;
+  a.download = `workbuddyTools-v1.0.1.zip`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

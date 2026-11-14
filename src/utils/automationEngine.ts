@@ -5,6 +5,8 @@ import {
   mapRawTaskToWorkBuddyTask,
   roundPoints,
   formatAccountLabel,
+  getLocalDateKey,
+  formatFullDateTime,
 } from './workbuddyRealApi';
 
 export class AutomationEngine {
@@ -167,12 +169,22 @@ export class AutomationEngine {
         const travelStatusRes = await workbuddyRealApi.getCatTravelStatus(creds, authType, extraHeaders);
         if (travelStatusRes.ok && travelStatusRes.data) {
           const tData = travelStatusRes.data.data || travelStatusRes.data;
+          const nowDate = new Date();
+          const todayKey = getLocalDateKey(nowDate);
+          const nowFull = formatFullDateTime(nowDate);
+          const nowTime = nowDate.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
           if (tData.can_claim || tData.status === 'completed' || tData.status === 'finished') {
             const claimRes = await workbuddyRealApi.claimCatTravelReward(creds, authType, extraHeaders);
             if (claimRes.ok) {
               successes++;
               account.catTravel.status = '今日已完成';
-              account.catTravel.lastResult = '猫猫旅行完成并已领取奖励！';
+              account.catTravel.statusUpdated = nowTime;
+              account.catTravel.lastCompletedAt = nowFull;
+              account.catTravel.lastCompletedDate = todayKey;
+              account.catTravel.remainingSeconds = 0;
+              account.catTravel.detailMessage = `猫猫今日旅行完成并已领奖 (完成时间: ${nowFull})`;
+              account.catTravel.lastResult = `猫猫旅行完成并已领取奖励 (${nowFull})`;
               await new Promise((r) => setTimeout(r, 400));
               await this.syncLivePointsFromServer(account, creds, authType, extraHeaders);
               onProgress(
@@ -181,7 +193,7 @@ export class AutomationEngine {
                   timestamp: new Date().toLocaleTimeString(),
                   accountId: account.id,
                   level: 'success',
-                  message: `${getAccPrefix()} 成功领取猫猫旅行奖励，已调官方服务实时刷新积分：${account.points}`,
+                  message: `${getAccPrefix()} 成功领取猫猫旅行奖励 (完成时间: ${nowFull})，已调官方服务实时刷新积分：${account.points}`,
                 },
                 updated,
                 { successes, fails, skips }
@@ -191,8 +203,38 @@ export class AutomationEngine {
             const departRes = await workbuddyRealApi.departCatTravel(1, creds, authType, extraHeaders);
             if (departRes.ok) {
               successes++;
-              account.catTravel.status = '今日已完成';
-              account.catTravel.lastResult = '猫猫已成功启程旅行！';
+              await new Promise((r) => setTimeout(r, 400));
+              const afterRes = await workbuddyRealApi.getCatTravelStatus(creds, authType, extraHeaders).catch(() => null);
+              const afterData = afterRes?.ok ? afterRes.data?.data || afterRes.data || {} : {};
+              const afterNow = new Date();
+              const afterKey = getLocalDateKey(afterNow);
+              const afterFull = formatFullDateTime(afterNow);
+              const afterTime = afterNow.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+              if (afterData.can_claim || afterData.status === 'completed' || afterData.status === 'finished') {
+                await workbuddyRealApi.claimCatTravelReward(creds, authType, extraHeaders).catch(() => null);
+                account.catTravel.status = '今日已完成';
+                account.catTravel.statusUpdated = afterTime;
+                account.catTravel.lastCompletedAt = afterFull;
+                account.catTravel.lastCompletedDate = afterKey;
+                account.catTravel.remainingSeconds = 0;
+                account.catTravel.detailMessage = `猫猫今日旅行完成并已领奖 (完成时间: ${afterFull})`;
+                account.catTravel.lastResult = `猫猫已出发并领取今日奖励 (${afterFull})`;
+              } else if (afterData.status === 'in_travel' && Number(afterData.remaining_seconds || 0) > 0) {
+                account.catTravel.status = '旅行中';
+                account.catTravel.statusUpdated = afterTime;
+                account.catTravel.lastDepartedAt = afterFull;
+                account.catTravel.remainingSeconds = Number(afterData.remaining_seconds || 0);
+                account.catTravel.detailMessage = `猫猫已出发旅行 (剩余 ${account.catTravel.remainingSeconds}s)，归来后自动托管领奖`;
+                account.catTravel.lastResult = `猫猫旅行中 (${afterFull} 出发)`;
+              } else {
+                account.catTravel.status = '今日已完成';
+                account.catTravel.statusUpdated = afterTime;
+                account.catTravel.lastCompletedAt = afterFull;
+                account.catTravel.lastCompletedDate = afterKey;
+                account.catTravel.detailMessage = `猫猫今日已启程完成旅行 (记录时间: ${afterFull})`;
+                account.catTravel.lastResult = `猫猫已成功启程旅行 (${afterFull})`;
+              }
               await this.syncLivePointsFromServer(account, creds, authType, extraHeaders);
               onProgress(
                 {
@@ -200,16 +242,42 @@ export class AutomationEngine {
                   timestamp: new Date().toLocaleTimeString(),
                   accountId: account.id,
                   level: 'success',
-                  message: `${getAccPrefix()} 猫猫已自动出发旅行，当前官方实时积分：${account.points}`,
+                  message: `${getAccPrefix()} 猫猫已自动出发旅行 (时间: ${afterFull})，当前官方实时积分：${account.points}`,
                 },
                 updated,
                 { successes, fails, skips }
               );
             }
+          } else if (tData.status === 'in_travel') {
+            const remSec = Number(tData.remaining_seconds || 0);
+            account.catTravel.status = '旅行中';
+            account.catTravel.statusUpdated = nowTime;
+            account.catTravel.remainingSeconds = remSec;
+            account.catTravel.detailMessage = `猫猫正在旅行中${remSec > 0 ? ` (约 ${remSec} 秒后归来自动领奖)` : ''}`;
+            account.catTravel.lastResult = '猫猫旅行进行中';
+            onProgress(
+              {
+                id: Math.random().toString(36).substring(2, 9),
+                timestamp: new Date().toLocaleTimeString(),
+                accountId: account.id,
+                level: 'info',
+                message: `${getAccPrefix()} 猫猫当前正在旅行中${remSec > 0 ? ` (剩余 ${remSec}s)` : ''}，归来后将自动领奖`,
+              },
+              updated,
+              { successes, fails, skips }
+            );
           } else if (tData.daily_limit_reached || tData.status === 'daily_limit_reached') {
             skips++;
+            const rememberedAt =
+              account.catTravel.lastCompletedDate === todayKey && account.catTravel.lastCompletedAt
+                ? account.catTravel.lastCompletedAt
+                : nowFull;
             account.catTravel.status = '今日已完成';
-            account.catTravel.detailMessage = '猫猫今日已完成旅行 (服务端标记 daily_limit_reached)';
+            account.catTravel.statusUpdated = nowTime;
+            account.catTravel.lastCompletedAt = rememberedAt;
+            account.catTravel.lastCompletedDate = todayKey;
+            account.catTravel.remainingSeconds = 0;
+            account.catTravel.detailMessage = `猫猫今日已完成旅行 (完成时间: ${rememberedAt})`;
             account.catTravel.lastResult = '猫猫今日旅行次数已达上限，无需重复执行';
             onProgress(
               {
@@ -217,7 +285,7 @@ export class AutomationEngine {
                 timestamp: new Date().toLocaleTimeString(),
                 accountId: account.id,
                 level: 'info',
-                message: `${getAccPrefix()} 猫猫今日已完成旅行，跳过`,
+                message: `${getAccPrefix()} 猫猫今日已完成旅行 (记录时间: ${rememberedAt})，跳过`,
               },
               updated,
               { successes, fails, skips }
@@ -391,13 +459,20 @@ export class AutomationEngine {
       await this.syncLivePointsFromServer(account, creds, authType, extraHeaders);
       if (streakRes.ok && streakRes.data) {
         const sData = streakRes.data.data || streakRes.data;
+        const streakDays = Number(sData?.streak?.days || 1);
+        const nowCheck = new Date();
+        account.dailyCheckin = {
+          lastCheckinDate: getLocalDateKey(nowCheck),
+          lastCheckinAt: formatFullDateTime(nowCheck),
+          streakDays,
+        };
         onProgress(
           {
             id: Math.random().toString(36).substring(2, 9),
             timestamp: new Date().toLocaleTimeString(),
             accountId: account.id,
             level: 'info',
-            message: `${getAccPrefix()} 官方签到/活跃状态更新成功 (连续活跃: ${sData.streak?.days || 1} 天 · 实时积分: ${account.points})`,
+            message: `${getAccPrefix()} 官方签到/活跃状态更新成功 (连续活跃: ${streakDays} 天 · 实时积分: ${account.points})`,
           },
           updated,
           { successes, fails, skips }
@@ -437,13 +512,60 @@ export class AutomationEngine {
 
       const statusRes = await workbuddyRealApi.getCatTravelStatus(creds, authType, extraHeaders);
       if (statusRes.ok) {
-        await workbuddyRealApi.claimCatTravelReward(creds, authType, extraHeaders);
-        await workbuddyRealApi.departCatTravel(1, creds, authType, extraHeaders);
-        await new Promise((r) => setTimeout(r, 400));
-        await this.syncLivePointsFromServer(account, creds, authType, extraHeaders);
+        const tData = statusRes.data?.data || statusRes.data || {};
+        const now = new Date();
+        const todayKey = getLocalDateKey(now);
+        const nowFull = formatFullDateTime(now);
+        const nowTime = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 
-        account.catTravel.status = '今日已完成';
-        account.catTravel.statusUpdated = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        if (tData.daily_limit_reached || tData.status === 'daily_limit_reached') {
+          const rememberedAt =
+            account.catTravel.lastCompletedDate === todayKey && account.catTravel.lastCompletedAt
+              ? account.catTravel.lastCompletedAt
+              : nowFull;
+          account.catTravel.status = '今日已完成';
+          account.catTravel.statusUpdated = nowTime;
+          account.catTravel.lastCompletedAt = rememberedAt;
+          account.catTravel.lastCompletedDate = todayKey;
+          account.catTravel.remainingSeconds = 0;
+          account.catTravel.detailMessage = `猫猫今日已完成旅行 (完成时间: ${rememberedAt})`;
+          account.catTravel.lastResult = `今日已完成 (${rememberedAt})`;
+        } else {
+          if (tData.can_claim || tData.status === 'completed' || tData.status === 'finished') {
+            await workbuddyRealApi.claimCatTravelReward(creds, authType, extraHeaders);
+          } else if (tData.status !== 'in_travel') {
+            await workbuddyRealApi.departCatTravel(1, creds, authType, extraHeaders);
+            await new Promise((r) => setTimeout(r, 400));
+            await workbuddyRealApi.claimCatTravelReward(creds, authType, extraHeaders).catch(() => null);
+          }
+
+          await new Promise((r) => setTimeout(r, 350));
+          const verifyRes = await workbuddyRealApi.getCatTravelStatus(creds, authType, extraHeaders).catch(() => null);
+          const vData = verifyRes?.ok ? verifyRes.data?.data || verifyRes.data || {} : {};
+          const finishNow = new Date();
+          const finishKey = getLocalDateKey(finishNow);
+          const finishFull = formatFullDateTime(finishNow);
+          const finishTime = finishNow.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+          if (vData.status === 'in_travel' && Number(vData.remaining_seconds || 0) > 0 && !vData.can_claim) {
+            account.catTravel.status = '旅行中';
+            account.catTravel.statusUpdated = finishTime;
+            account.catTravel.lastDepartedAt = finishFull;
+            account.catTravel.remainingSeconds = Number(vData.remaining_seconds || 0);
+            account.catTravel.detailMessage = `猫猫正在旅行中 (剩余 ${account.catTravel.remainingSeconds}s)，归来后自动领奖`;
+            account.catTravel.lastResult = `旅行中 (${finishFull} 出发)`;
+          } else {
+            account.catTravel.status = '今日已完成';
+            account.catTravel.statusUpdated = finishTime;
+            account.catTravel.lastCompletedAt = finishFull;
+            account.catTravel.lastCompletedDate = finishKey;
+            account.catTravel.remainingSeconds = 0;
+            account.catTravel.detailMessage = `猫猫今日已完成旅行 (完成时间: ${finishFull})`;
+            account.catTravel.lastResult = `已完成并记录时间 (${finishFull})`;
+          }
+        }
+
+        await this.syncLivePointsFromServer(account, creds, authType, extraHeaders);
 
         onProgress(
           {
@@ -451,7 +573,9 @@ export class AutomationEngine {
             timestamp: new Date().toLocaleTimeString(),
             accountId: account.id,
             level: 'success',
-            message: `${accPrefix} 猫猫旅行请求已完成，实时同步积分：${account.points}`,
+            message: `${accPrefix} 猫猫旅行处理完成 (${account.catTravel.status}${
+              account.catTravel.lastCompletedAt ? ` · 完成时间 ${account.catTravel.lastCompletedAt}` : ''
+            })，实时同步积分：${account.points}`,
           },
           updated
         );
