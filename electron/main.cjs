@@ -1,5 +1,5 @@
 // Electron Main Process for WorkBuddy Tools (with kuaixuntong-style Stream Updater & CORS Proxy)
-const { app, BrowserWindow, ipcMain, shell, Menu, net, Tray, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, Menu, net, Tray, nativeImage, powerMonitor } = require('electron');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -12,6 +12,7 @@ let mainWindow = null;
 let tray = null;
 let isQuitting = false;
 let hasShownTrayBalloon = false;
+let schedulerTickTimer = null;
 
 function ensureStatelessLoginRealmCookies(cookieStr) {
   const currentCookie = String(cookieStr || '').trim();
@@ -134,7 +135,7 @@ async function fetchLatestReleaseInfo() {
     const apiRes = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
       headers: {
         Accept: 'application/vnd.github+json',
-        'User-Agent': 'WorkBuddyTools-Updater/1.0.1',
+        'User-Agent': 'WorkBuddyTools-Updater/1.0.2',
       },
       signal: AbortSignal.timeout(10000),
     });
@@ -158,7 +159,7 @@ async function fetchLatestReleaseInfo() {
     try {
       const res = await fetch(pageUrl, {
         redirect: 'follow',
-        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.1' },
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.2' },
         signal: AbortSignal.timeout(10000),
       });
       if (!res.ok) continue;
@@ -176,7 +177,7 @@ async function fetchLatestReleaseInfo() {
         : `https://github.com/${GITHUB_REPO}/releases/expanded_assets/${tagName}`;
 
       const expRes = await fetch(expandedUrl, {
-        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.1' },
+        headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.2' },
         signal: AbortSignal.timeout(10000),
       });
       const expHtml = expRes.ok ? await expRes.text() : html;
@@ -228,7 +229,7 @@ async function executeStreamDownload(targetUrl, originalFileName, nodeName, emit
   try {
     res = await fetch(targetUrl, {
       redirect: 'follow',
-      headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.1' },
+      headers: { 'User-Agent': 'WorkBuddyTools-Updater/1.0.2' },
       signal: controller.signal,
     });
   } finally {
@@ -899,7 +900,7 @@ function postJsonViaHttpConnectProxy(targetUrl, bodyStr, proxyUrl, timeoutMs) {
           headers: {
             'Content-Type': 'application/json',
             Accept: 'application/json',
-            'User-Agent': 'WorkBuddyTools-License/1.0.1',
+            'User-Agent': 'WorkBuddyTools-License/1.0.2',
             'Content-Length': Buffer.byteLength(bodyStr),
           },
           timeout: timeoutMs,
@@ -951,7 +952,7 @@ function postJsonDirectIpv4(targetUrl, bodyStr, timeoutMs) {
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          'User-Agent': 'WorkBuddyTools-License/1.0.1',
+          'User-Agent': 'WorkBuddyTools-License/1.0.2',
           'Content-Length': Buffer.byteLength(bodyStr),
         },
         timeout: timeoutMs,
@@ -1039,7 +1040,7 @@ ipcMain.handle('workbuddy:license-request', async (_event, { endpoint, body, pro
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json',
-          'User-Agent': 'WorkBuddyTools-License/1.0.1',
+          'User-Agent': 'WorkBuddyTools-License/1.0.2',
         },
         body: bodyStr,
         signal: controller.signal,
@@ -1184,7 +1185,7 @@ function createTray() {
   }
 
   tray = new Tray(trayImage);
-  tray.setToolTip('WorkBuddy 自动化工具 v1.0.1 · 后台自动托管中');
+  tray.setToolTip('WorkBuddy 自动化工具 v1.0.2 · 后台定时托管中');
 
   const contextMenu = Menu.buildFromTemplate([
     {
@@ -1220,6 +1221,26 @@ function createTray() {
   return tray;
 }
 
+function emitSchedulerTick(reason = 'tick') {
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+    try {
+      mainWindow.webContents.send('workbuddy:scheduler-tick', { nowMs: Date.now(), reason });
+    } catch {
+      // ignore during window teardown
+    }
+  }
+}
+
+function startMainProcessSchedulerHeartbeat() {
+  if (schedulerTickTimer) {
+    clearInterval(schedulerTickTimer);
+  }
+  // Unthrottled Node.js main-process heartbeat ensures scheduled daily tasks fire on time even when minimized to tray
+  schedulerTickTimer = setInterval(() => {
+    emitSchedulerTick('tick');
+  }, 2000);
+}
+
 function createWindow() {
   if (process.platform !== 'darwin') {
     Menu.setApplicationMenu(null);
@@ -1237,12 +1258,13 @@ function createWindow() {
     resizable: true,
     maximizable: true,
     minimizable: true,
-    title: 'WorkBuddy 自动化工具 v1.0.1',
+    title: 'WorkBuddy 自动化工具 v1.0.2',
     icon: path.join(__dirname, iconFile),
     backgroundColor: '#020617',
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
+      backgroundThrottling: false,
       preload: path.join(__dirname, 'preload.cjs'),
     },
   });
@@ -1291,11 +1313,23 @@ if (!gotSingleInstanceLock) {
 
   app.on('before-quit', () => {
     isQuitting = true;
+    if (schedulerTickTimer) {
+      clearInterval(schedulerTickTimer);
+      schedulerTickTimer = null;
+    }
   });
 
   app.whenReady().then(() => {
     createTray();
     createWindow();
+    startMainProcessSchedulerHeartbeat();
+
+    try {
+      powerMonitor.on('resume', () => emitSchedulerTick('power-resume'));
+      powerMonitor.on('unlock-screen', () => emitSchedulerTick('unlock-screen'));
+    } catch {
+      // ignore if powerMonitor unavailable
+    }
 
     app.on('activate', () => {
       restoreFromTray();

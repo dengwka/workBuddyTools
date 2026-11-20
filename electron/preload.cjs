@@ -5,7 +5,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   arch: process.arch,
   isElectron: true,
-  appVersion: '1.0.1',
+  appVersion: '1.0.2',
   proxyRequest: (payload) => ipcRenderer.invoke('workbuddy:proxy', payload),
   openExternal: (url) => ipcRenderer.invoke('workbuddy:open-external', url),
   getSystemInfo: () => ipcRenderer.invoke('workbuddy:get-system-info'),
@@ -30,6 +30,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (_event, inTray) => callback(Boolean(inTray));
     ipcRenderer.on('workbuddy:tray-state-changed', listener);
     return () => ipcRenderer.removeListener('workbuddy:tray-state-changed', listener);
+  },
+  onSchedulerTick: (callback) => {
+    const listener = (_event, payload) => callback(payload || { nowMs: Date.now(), reason: 'tick' });
+    ipcRenderer.on('workbuddy:scheduler-tick', listener);
+    return () => ipcRenderer.removeListener('workbuddy:scheduler-tick', listener);
   },
   onUpdateProgress: (callback) => {
     const listener = (_event, data) => callback(data);

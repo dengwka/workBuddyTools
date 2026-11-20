@@ -54,6 +54,9 @@ import {
   formatAccountLabel,
   getLocalDateKey,
   formatFullDateTime,
+  normalizeScheduleTimeString,
+  parseTimeToSeconds,
+  parseCatTravelServerState,
 } from '../utils/workbuddyRealApi';
 import {
   DEFAULT_APP_TYPE,
@@ -219,6 +222,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
               windowClose?: () => Promise<void>;
               windowQuit?: () => Promise<void>;
               onWindowMaximizedChanged?: (cb: (isMax: boolean) => void) => () => void;
+              onSchedulerTick?: (cb: (payload: { nowMs: number; reason?: string }) => void) => () => void;
             };
           }
         ).electronAPI
@@ -226,7 +230,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   const isElectronApp = Boolean(electronWindowApi?.isElectron);
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
 
-  // Daily automatic Cat Travel + Check-in scheduler preference (default enabled)
+  // Daily automatic schedule preference (default enabled, default 08:00:00)
   const [autoDailyEnabled, setAutoDailyEnabled] = useState<boolean>(() => {
     try {
       const v = localStorage.getItem('workbuddy_auto_daily_v1');
@@ -236,6 +240,34 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     }
   });
 
+  const [autoDailyTime, setAutoDailyTime] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('workbuddy_auto_daily_time_v1');
+      return normalizeScheduleTimeString(saved || '08:00:00', '08:00:00');
+    } catch {
+      return '08:00:00';
+    }
+  });
+
+  const [lastAutoDailyRun, setLastAutoDailyRun] = useState<{
+    date: string;
+    triggerTime: string;
+    executedAt: string;
+  } | null>(() => {
+    try {
+      const raw = localStorage.getItem('workbuddy_auto_daily_last_run_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.date === 'string') return parsed;
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  });
+
+  const [isAutoDailyRunning, setIsAutoDailyRunning] = useState(false);
+
   useEffect(() => {
     try {
       localStorage.setItem('workbuddy_auto_daily_v1', String(autoDailyEnabled));
@@ -243,6 +275,26 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
       // ignore
     }
   }, [autoDailyEnabled]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('workbuddy_auto_daily_time_v1', autoDailyTime);
+    } catch {
+      // ignore
+    }
+  }, [autoDailyTime]);
+
+  useEffect(() => {
+    try {
+      if (lastAutoDailyRun) {
+        localStorage.setItem('workbuddy_auto_daily_last_run_v1', JSON.stringify(lastAutoDailyRun));
+      } else {
+        localStorage.removeItem('workbuddy_auto_daily_last_run_v1');
+      }
+    } catch {
+      // ignore
+    }
+  }, [lastAutoDailyRun]);
 
   useEffect(() => {
     if (!electronWindowApi?.isElectron) return;
@@ -579,8 +631,10 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
   const handleSaveAccount = (updatedAcc: WorkBuddyAccount) => {
     const normalizedAcc: WorkBuddyAccount = {
       ...updatedAcc,
+      status: '正常',
       points: roundPoints(updatedAcc.points),
     };
+    delete travelFollowupNextCheckRef.current[normalizedAcc.id];
     setAccounts((prev) => prev.map((a) => (a.id === normalizedAcc.id ? normalizedAcc : a)));
     addLog(
       'success',
@@ -780,10 +834,9 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
       const nowFull = formatFullDateTime(now);
       const timeStr = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
       if (res.ok && res.data) {
-        const t = res.data.data || res.data;
-        const isClaimable = Boolean(t.can_claim || t.status === 'completed' || t.status === 'finished');
+        const parsed = parseCatTravelServerState(res.data);
 
-        if (isClaimable) {
+        if (parsed.isClaimable) {
           const claimRes = await workbuddyRealApi
             .claimCatTravelReward(currentAccount.credentials, currentAccount.authType, currentAccount.extraHeaders)
             .catch(() => null);
@@ -813,44 +866,51 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
           }
         }
 
-        const isDoneToday = Boolean(t.daily_limit_reached || t.status === 'daily_limit_reached');
-        const statusText: '今日已完成' | '旅行中' | '待出发' = isDoneToday
+        const statusText: '今日已完成' | '旅行中' | '待出发' = parsed.isDailyLimitReached
           ? '今日已完成'
-          : t.status === 'in_travel'
+          : parsed.isInTravel
           ? '旅行中'
           : '待出发';
+
+        if (statusText === '旅行中') {
+          const waitSec = parsed.remainingSeconds > 0 ? Math.min(Math.max(parsed.remainingSeconds + 5, 20), 1800) : 120;
+          travelFollowupNextCheckRef.current[currentAccount.id] = Date.now() + waitSec * 1000;
+        }
 
         setAccounts((prev) =>
           prev.map((a) => {
             if (a.id !== currentAccount.id) return a;
-            const rememberedAt =
-              isDoneToday
-                ? a.catTravel.lastCompletedDate === todayKey && a.catTravel.lastCompletedAt
-                  ? a.catTravel.lastCompletedAt
-                  : nowFull
-                : a.catTravel.lastCompletedAt;
+            const rememberedAt = parsed.isDailyLimitReached
+              ? a.catTravel.lastCompletedDate === todayKey && a.catTravel.lastCompletedAt
+                ? a.catTravel.lastCompletedAt
+                : nowFull
+              : a.catTravel.lastCompletedAt;
             return {
               ...a,
               catTravel: {
                 ...a.catTravel,
                 status: statusText,
                 statusUpdated: timeStr,
-                remainingSeconds: statusText === '旅行中' ? Number(t.remaining_seconds || 0) : 0,
+                remainingSeconds: statusText === '旅行中' ? parsed.remainingSeconds : 0,
                 lastCompletedAt: rememberedAt,
-                lastCompletedDate: isDoneToday ? todayKey : a.catTravel.lastCompletedDate,
-                detailMessage: isDoneToday
+                lastCompletedDate: parsed.isDailyLimitReached ? todayKey : a.catTravel.lastCompletedDate,
+                detailMessage: parsed.isDailyLimitReached
                   ? `猫猫今日已完成旅行 (完成时间: ${rememberedAt})`
                   : statusText === '旅行中'
-                  ? `猫猫正在旅行中${t.remaining_seconds ? ` (剩余 ${t.remaining_seconds}s)` : ''}`
-                  : `旅行状态: ${statusText}`,
+                  ? `猫猫正在旅行中${parsed.remainingSeconds > 0 ? ` (剩余 ${parsed.remainingSeconds}s)` : ''}，归来后自动领奖`
+                  : `旅行状态: ${statusText} (服务端: ${parsed.rawStatus || 'ready'})`,
               },
             };
           })
         );
         await handleFetchLivePoints(currentAccount, false);
-        addLog('success', currentAccount.id, `${accPrefix} 猫猫旅行状态已更新：${statusText}`);
+        addLog(
+          'success',
+          currentAccount.id,
+          `${accPrefix} 猫猫旅行状态已更新：${statusText} (raw=${parsed.rawStatus || 'ready'}, remain=${parsed.remainingSeconds}s)`
+        );
       } else {
-        addLog('info', currentAccount.id, `${accPrefix} 猫猫状态已更新完成 (${timeStr})`);
+        addLog('warn', currentAccount.id, `${accPrefix} 猫猫状态查询返回 HTTP ${res.status} (${timeStr})`);
       }
     } catch {
       addLog('warn', currentAccount.id, `${accPrefix} 猫猫状态查询未完成`);
@@ -1065,13 +1125,17 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     setRunningStatusText('签到完成');
   };
 
-  // Daily Automatic Cat Travel + Daily Check-in Background Scheduler
+  // =========================================================================
+  // Daily Scheduled Automation Engine (Configurable HH:mm:ss -> 签到 → 猫猫旅行 → 领奖)
+  // =========================================================================
   const accountsRef = useRef(accounts);
   const isRunningRef = useRef(isRunning);
   const licenseAuthRef = useRef(licenseState.isAuthorized);
   const autoDailyEnabledRef = useRef(autoDailyEnabled);
+  const autoDailyTimeRef = useRef(autoDailyTime);
+  const lastAutoDailyRunRef = useRef(lastAutoDailyRun);
   const autoDailyRunningRef = useRef(false);
-  const accountDailyCooldownRef = useRef<Record<string, number>>({});
+  const travelFollowupNextCheckRef = useRef<Record<string, number>>({});
   const lastRolloverDayRef = useRef<string>(getLocalDateKey());
 
   useEffect(() => {
@@ -1090,64 +1154,240 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
     autoDailyEnabledRef.current = autoDailyEnabled;
   }, [autoDailyEnabled]);
 
-  const runDailyAutoHostCycle = useCallback(async (triggerSource: 'startup' | 'interval' | 'focus' | 'midnight') => {
-    const todayKey = getLocalDateKey();
+  useEffect(() => {
+    autoDailyTimeRef.current = autoDailyTime;
+  }, [autoDailyTime]);
 
-    // 1. Cross-day rollover reset on UI state (preserves lastCompletedAt timestamp!)
-    if (todayKey !== lastRolloverDayRef.current) {
-      lastRolloverDayRef.current = todayKey;
-      accountDailyCooldownRef.current = {};
-      setAccounts((prev) => prev.map((acc) => normalizeAccountForToday(acc, todayKey)));
-    }
+  useEffect(() => {
+    lastAutoDailyRunRef.current = lastAutoDailyRun;
+  }, [lastAutoDailyRun]);
 
-    if (!licenseAuthRef.current || !autoDailyEnabledRef.current) return;
-    if (isRunningRef.current || autoDailyRunningRef.current) return;
+  // Helper: sync Growth Center tasks and auto-claim any '待领奖' rewards for one account
+  const claimPendingGrowthRewardsForAccount = useCallback(
+    async (acc: WorkBuddyAccount, tag: string): Promise<number> => {
+      const accPrefix = `[操作账号: ${formatAccountLabel(acc.id, acc.nickname)}]`;
+      let claimedCount = 0;
+      try {
+        const tasksRes = await workbuddyRealApi
+          .getGrowthTasks(acc.credentials, acc.authType, acc.extraHeaders)
+          .catch(() => null);
+        if (!tasksRes?.ok || !tasksRes.data) return 0;
 
-    const currentList = accountsRef.current;
-    const nowMs = Date.now();
-    const candidates = currentList.filter((acc) => {
-      if (!acc.credentials || !acc.credentials.trim()) return false;
-      if (acc.status === '异常') return false;
-      const cooldownUntil = accountDailyCooldownRef.current[acc.id] || 0;
-      if (nowMs < cooldownUntil) return false;
+        const rawList: WorkBuddyRawTask[] =
+          tasksRes.data.data?.tasks || tasksRes.data.tasks || tasksRes.data.data || [];
+        if (!Array.isArray(rawList) || rawList.length === 0) return 0;
 
-      const needsTravel = acc.catTravel.autoTravel !== false && acc.catTravel.lastCompletedDate !== todayKey;
-      const needsCheckin = acc.autoDailyCheckin !== false && acc.dailyCheckin?.lastCheckinDate !== todayKey;
-      return needsTravel || needsCheckin;
-    });
+        const mapped = rawList.map((rt) => mapRawTaskToWorkBuddyTask(rt));
+        setAccounts((prev) => prev.map((a) => (a.id === acc.id ? { ...a, tasks: mapped } : a)));
 
-    if (candidates.length === 0) return;
+        const claimable = mapped.filter((t) => t.status === '待领奖');
+        if (claimable.length === 0) {
+          addLog('info', acc.id, `${accPrefix} ${tag} 成长中心当前无待领奖任务`);
+          return 0;
+        }
 
-    autoDailyRunningRef.current = true;
-    try {
-      for (const acc of candidates) {
-        if (!licenseAuthRef.current || !autoDailyEnabledRef.current || isRunningRef.current) break;
+        for (const task of claimable) {
+          const claimRes = await workbuddyRealApi
+            .claimTaskReward(task.id, acc.credentials, acc.authType, acc.extraHeaders)
+            .catch(() => null);
+          if (claimRes?.ok) {
+            claimedCount++;
+            addLog(
+              'success',
+              acc.id,
+              `${accPrefix} ${tag} 自动领取成长奖励【${task.name}】(+${task.reward} 分)`
+            );
+          } else {
+            addLog(
+              'warn',
+              acc.id,
+              `${accPrefix} ${tag} 尝试领取【${task.name}】未成功: ${claimRes?.message || `HTTP ${claimRes?.status || 0}`}`
+            );
+          }
+        }
 
-        const accPrefix = `[操作账号: ${formatAccountLabel(acc.id, acc.nickname)}]`;
-        const creds = acc.credentials;
-        const authType = acc.authType || 'cookie';
-        const extraHeaders = acc.extraHeaders;
-        let authExpired = false;
+        if (claimedCount > 0) {
+          await new Promise((r) => setTimeout(r, 400));
+          const refreshed = await workbuddyRealApi
+            .getGrowthTasks(acc.credentials, acc.authType, acc.extraHeaders)
+            .catch(() => null);
+          if (refreshed?.ok && refreshed.data) {
+            const nextRaw: WorkBuddyRawTask[] =
+              refreshed.data.data?.tasks || refreshed.data.tasks || refreshed.data.data || [];
+            if (Array.isArray(nextRaw) && nextRaw.length > 0) {
+              const nextMapped = nextRaw.map((rt) => mapRawTaskToWorkBuddyTask(rt));
+              setAccounts((prev) => prev.map((a) => (a.id === acc.id ? { ...a, tasks: nextMapped } : a)));
+            }
+          }
+        }
+      } catch {
+        // ignore transient task fetch errors
+      }
+      return claimedCount;
+    },
+    []
+  );
 
-        // A. Automatic Daily Cat Travel (Depart -> Claim -> Remember completion timestamp)
-        if (acc.catTravel.autoTravel !== false && acc.catTravel.lastCompletedDate !== todayKey) {
-          try {
-            const statusRes = await workbuddyRealApi.getCatTravelStatus(creds, authType, extraHeaders);
-            if (statusRes.status === 401) {
-              authExpired = true;
-              setAccounts((prev) => prev.map((a) => (a.id === acc.id ? { ...a, status: '异常' } : a)));
-              addLog('error', acc.id, `${accPrefix} [自动托管] Cookie 已失效 (401)，已暂停该账号自动任务`);
-            } else if (statusRes.ok && statusRes.data) {
-              const t = statusRes.data.data || statusRes.data;
-              const now = new Date();
-              const nowFull = formatFullDateTime(now);
-              const nowTime = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  // Full Scheduled Pipeline: 签到 → 猫猫旅行 → 领奖 (with live console output)
+  const executeScheduledDailyPipeline = useCallback(
+    async (triggerMode: 'schedule' | 'manual') => {
+      if (!licenseAuthRef.current) return;
+      if (isRunningRef.current || autoDailyRunningRef.current) return;
 
-              if (t.can_claim || t.status === 'completed' || t.status === 'finished') {
-                const claimRes = await workbuddyRealApi.claimCatTravelReward(creds, authType, extraHeaders);
-                if (claimRes.ok) {
-                  await new Promise((r) => setTimeout(r, 350));
-                  const pts = await handleFetchLivePoints(acc, false);
+      const todayKey = getLocalDateKey();
+      const targetTimeStr = autoDailyTimeRef.current;
+      const tag = triggerMode === 'schedule' ? `[定时任务 ${targetTimeStr}]` : '[定时链路测试]';
+
+      const currentList = accountsRef.current;
+      const eligibleAccounts = currentList.filter((acc) => Boolean(acc.credentials && acc.credentials.trim()));
+
+      if (eligibleAccounts.length === 0) {
+        addLog('warn', 'system', `${tag} 未检测到已配置凭据的账号，跳过本次自动执行`);
+        return;
+      }
+
+      autoDailyRunningRef.current = true;
+      setIsAutoDailyRunning(true);
+      setRunningStatusText(`${tag} 正在执行 签到 → 猫猫旅行 → 领奖...`);
+      addLog(
+        'info',
+        eligibleAccounts[0].id,
+        `${tag} 已触发每日自动托管（共 ${eligibleAccounts.length} 个有效账号），执行链路：签到 → 猫猫旅行 → 领奖`
+      );
+
+      let roundSuccess = 0;
+      let roundFailed = 0;
+
+      try {
+        for (const acc of eligibleAccounts) {
+          if (!licenseAuthRef.current) break;
+
+          const accPrefix = `[操作账号: ${formatAccountLabel(acc.id, acc.nickname)}]`;
+          const creds = acc.credentials;
+          const authType = acc.authType || 'cookie';
+          const extraHeaders = acc.extraHeaders;
+          let authExpired = false;
+          let catStatusLabel: string = acc.catTravel.status;
+
+          // -----------------------------------------------------------
+          // 步骤 1/3: 每日签到
+          // -----------------------------------------------------------
+          if (acc.autoDailyCheckin === false) {
+            addLog('info', acc.id, `${accPrefix} ${tag} 步骤 1/3 · 该账号已关闭自动签到，跳过`);
+          } else {
+            addLog('info', acc.id, `${accPrefix} ${tag} 步骤 1/3 · 正在执行每日签到与活跃打卡...`);
+            try {
+              const streakRes = await workbuddyRealApi.getDailyStreak(creds, authType, extraHeaders);
+              if (streakRes.status === 401) {
+                authExpired = true;
+                roundFailed++;
+                setAccounts((prev) => prev.map((a) => (a.id === acc.id ? { ...a, status: '异常' } : a)));
+                addLog('error', acc.id, `${accPrefix} ${tag} 步骤 1/3 · 签到返回 401 Unauthorized，Cookie 已失效，跳过后续步骤`);
+              } else if (streakRes.ok) {
+                roundSuccess++;
+                const days = Number(streakRes.data?.data?.streak?.days || streakRes.data?.streak?.days || 1);
+                const now = new Date();
+                const nowFull = formatFullDateTime(now);
+                setAccounts((prev) =>
+                  prev.map((a) =>
+                    a.id === acc.id
+                      ? {
+                          ...a,
+                          status: '正常',
+                          dailyCheckin: {
+                            lastCheckinDate: todayKey,
+                            lastCheckinAt: nowFull,
+                            streakDays: days,
+                          },
+                        }
+                      : a
+                  )
+                );
+                addLog(
+                  'success',
+                  acc.id,
+                  `${accPrefix} ${tag} 步骤 1/3 · 每日签到完成！(连续活跃 ${days} 天 · 时间 ${nowFull})`
+                );
+              } else {
+                addLog(
+                  'warn',
+                  acc.id,
+                  `${accPrefix} ${tag} 步骤 1/3 · 签到接口返回 HTTP ${streakRes.status}，继续执行猫猫旅行`
+                );
+              }
+            } catch (err: unknown) {
+              addLog(
+                'warn',
+                acc.id,
+                `${accPrefix} ${tag} 步骤 1/3 · 签到请求异常: ${err instanceof Error ? err.message : '网络错误'}`
+              );
+            }
+          }
+
+          if (authExpired) continue;
+
+          // -----------------------------------------------------------
+          // 步骤 2/3: 猫猫旅行 (查询状态 -> 出发 / 归来领奖 / 记录时间)
+          // -----------------------------------------------------------
+          if (acc.catTravel.autoTravel === false) {
+            addLog('info', acc.id, `${accPrefix} ${tag} 步骤 2/3 · 该账号已关闭「自动旅行」，跳过猫猫旅行`);
+          } else {
+            addLog('info', acc.id, `${accPrefix} ${tag} 步骤 2/3 · 正在查询猫猫旅行状态并执行自动旅行...`);
+            try {
+              const statusRes = await workbuddyRealApi.getCatTravelStatus(creds, authType, extraHeaders);
+              if (statusRes.status === 401) {
+                authExpired = true;
+                roundFailed++;
+                setAccounts((prev) => prev.map((a) => (a.id === acc.id ? { ...a, status: '异常' } : a)));
+                addLog('error', acc.id, `${accPrefix} ${tag} 步骤 2/3 · 猫猫旅行返回 401，Cookie 已失效`);
+              } else if (statusRes.ok && statusRes.data) {
+                const parsed = parseCatTravelServerState(statusRes.data);
+                const now = new Date();
+                const nowFull = formatFullDateTime(now);
+                const nowTime = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+                addLog(
+                  'info',
+                  acc.id,
+                  `${accPrefix} ${tag} 猫猫状态解析: status=${parsed.rawStatus || 'ready'}, dailyLimit=${parsed.isDailyLimitReached}, canClaim=${parsed.isClaimable}, inTravel=${parsed.isInTravel}, remain=${parsed.remainingSeconds}s`
+                );
+
+                if (parsed.isClaimable) {
+                  const claimRes = await workbuddyRealApi.claimCatTravelReward(creds, authType, extraHeaders);
+                  if (claimRes.ok) {
+                    roundSuccess++;
+                    catStatusLabel = '今日已完成';
+                    delete travelFollowupNextCheckRef.current[acc.id];
+                    setAccounts((prev) =>
+                      prev.map((a) =>
+                        a.id === acc.id
+                          ? {
+                              ...a,
+                              catTravel: {
+                                ...a.catTravel,
+                                status: '今日已完成',
+                                statusUpdated: nowTime,
+                                lastCompletedAt: nowFull,
+                                lastCompletedDate: todayKey,
+                                remainingSeconds: 0,
+                                detailMessage: `定时猫猫旅行完成并已领奖 (完成时间: ${nowFull})`,
+                                lastResult: `自动领奖完成 (${nowFull})`,
+                              },
+                            }
+                          : a
+                      )
+                    );
+                    addLog('success', acc.id, `${accPrefix} ${tag} 步骤 2/3 · 猫猫已归来并自动领取旅行奖励！(完成时间: ${nowFull})`);
+                  } else {
+                    addLog('warn', acc.id, `${accPrefix} ${tag} 步骤 2/3 · 猫猫领奖返回 HTTP ${claimRes.status}`);
+                  }
+                } else if (parsed.isDailyLimitReached) {
+                  catStatusLabel = '今日已完成';
+                  delete travelFollowupNextCheckRef.current[acc.id];
+                  const rememberedAt =
+                    acc.catTravel.lastCompletedDate === todayKey && acc.catTravel.lastCompletedAt
+                      ? acc.catTravel.lastCompletedAt
+                      : nowFull;
                   setAccounts((prev) =>
                     prev.map((a) =>
                       a.id === acc.id
@@ -1157,90 +1397,135 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                               ...a.catTravel,
                               status: '今日已完成',
                               statusUpdated: nowTime,
-                              lastCompletedAt: nowFull,
+                              lastCompletedAt: rememberedAt,
                               lastCompletedDate: todayKey,
                               remainingSeconds: 0,
-                              detailMessage: `今日自动猫猫旅行完成并已领奖 (完成时间: ${nowFull})`,
-                              lastResult: `自动完成领奖 (${nowFull})`,
+                              detailMessage: `猫猫今日已完成旅行 (完成时间: ${rememberedAt})`,
+                              lastResult: `今日已完成 (${rememberedAt})`,
+                            },
+                          }
+                        : a
+                    )
+                  );
+                  addLog('info', acc.id, `${accPrefix} ${tag} 步骤 2/3 · 猫猫今日已完成旅行，已同步完成时间: ${rememberedAt}`);
+                } else if (parsed.isInTravel) {
+                  catStatusLabel = '旅行中';
+                  const remSec = parsed.remainingSeconds;
+                  const nextWaitSec = remSec > 0 ? Math.min(Math.max(remSec + 5, 20), 1800) : 120;
+                  travelFollowupNextCheckRef.current[acc.id] = Date.now() + nextWaitSec * 1000;
+                  setAccounts((prev) =>
+                    prev.map((a) =>
+                      a.id === acc.id
+                        ? {
+                            ...a,
+                            catTravel: {
+                              ...a.catTravel,
+                              status: '旅行中',
+                              statusUpdated: nowTime,
+                              remainingSeconds: remSec,
+                              detailMessage: `猫猫正在旅行中${remSec > 0 ? ` (约 ${remSec}s 后自动归来领奖)` : ''}，已挂起自动领奖监听`,
+                              lastResult: `旅行中 (${nowTime})`,
                             },
                           }
                         : a
                     )
                   );
                   addLog(
-                    'success',
+                    'info',
                     acc.id,
-                    `${accPrefix} [自动托管] 每日猫猫旅行已自动完成并领奖 (完成时间: ${nowFull}${
-                      pts !== null ? ` · 实时积分: ${pts}` : ''
-                    })`
+                    `${accPrefix} ${tag} 步骤 2/3 · 猫猫正在旅行中${remSec > 0 ? ` (剩余 ${remSec}s)` : ''}，系统将在 ${nextWaitSec}s 后自动巡检并领奖`
                   );
-                }
-              } else if (t.daily_limit_reached || t.status === 'daily_limit_reached') {
-                const rememberedAt =
-                  acc.catTravel.lastCompletedDate === todayKey && acc.catTravel.lastCompletedAt
-                    ? acc.catTravel.lastCompletedAt
-                    : nowFull;
-                setAccounts((prev) =>
-                  prev.map((a) =>
-                    a.id === acc.id
-                      ? {
-                          ...a,
-                          catTravel: {
-                            ...a.catTravel,
-                            status: '今日已完成',
-                            statusUpdated: nowTime,
-                            lastCompletedAt: rememberedAt,
-                            lastCompletedDate: todayKey,
-                            remainingSeconds: 0,
-                            detailMessage: `猫猫今日已完成旅行 (记录时间: ${rememberedAt})`,
-                            lastResult: `今日已完成 (${rememberedAt})`,
-                          },
-                        }
-                      : a
-                  )
-                );
-                if (triggerSource === 'startup' || triggerSource === 'midnight') {
-                  addLog('info', acc.id, `${accPrefix} [自动托管] 今日猫猫旅行已完成并同步完成时间: ${rememberedAt}`);
-                }
-              } else if (t.status === 'ready' || t.status === 'idle' || t.can_depart) {
-                const departRes = await workbuddyRealApi.departCatTravel(1, creds, authType, extraHeaders);
-                if (departRes.ok) {
-                  await new Promise((r) => setTimeout(r, 450));
-                  const afterRes = await workbuddyRealApi.getCatTravelStatus(creds, authType, extraHeaders).catch(() => null);
-                  const afterData = afterRes?.ok ? afterRes.data?.data || afterRes.data || {} : {};
-                  const finishNow = new Date();
-                  const finishFull = formatFullDateTime(finishNow);
-                  const finishTime = finishNow.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+                } else {
+                  // Depart cat travel (try detected locationId, fallback to 1)
+                  addLog('info', acc.id, `${accPrefix} ${tag} 正在派发猫猫出发旅行 (location_id=${parsed.locationId})...`);
+                  let departRes = await workbuddyRealApi.departCatTravel(parsed.locationId, creds, authType, extraHeaders);
+                  if (!departRes.ok && parsed.locationId !== 1) {
+                    departRes = await workbuddyRealApi.departCatTravel(1, creds, authType, extraHeaders);
+                  }
 
-                  if (afterData.status === 'in_travel' && Number(afterData.remaining_seconds || 0) > 0 && !afterData.can_claim) {
-                    const remSec = Number(afterData.remaining_seconds || 0);
-                    accountDailyCooldownRef.current[acc.id] = Date.now() + Math.min(Math.max(remSec + 5, 20), 3600) * 1000;
-                    setAccounts((prev) =>
-                      prev.map((a) =>
-                        a.id === acc.id
-                          ? {
-                              ...a,
-                              catTravel: {
-                                ...a.catTravel,
-                                status: '旅行中',
-                                statusUpdated: finishTime,
-                                lastDepartedAt: finishFull,
-                                remainingSeconds: remSec,
-                                detailMessage: `自动托管已出发旅行 (约 ${remSec}s 后归来自动领奖)`,
-                                lastResult: `自动出发旅行 (${finishFull})`,
-                              },
-                            }
-                          : a
-                      )
-                    );
-                    addLog(
-                      'info',
-                      acc.id,
-                      `${accPrefix} [自动托管] 今日猫猫旅行已自动出发 (剩余 ${remSec}s，归来后将自动领奖并记录时间)`
-                    );
-                  } else {
+                  const departMsg = String(
+                    departRes.data?.message || departRes.data?.msg || departRes.data?.error || ''
+                  );
+
+                  // If server reports unclaimed reward before depart, claim first then depart once more
+                  if (!departRes.ok && /claim|领奖|未领取/i.test(departMsg)) {
                     await workbuddyRealApi.claimCatTravelReward(creds, authType, extraHeaders).catch(() => null);
-                    const pts = await handleFetchLivePoints(acc, false);
+                    await new Promise((r) => setTimeout(r, 350));
+                    departRes = await workbuddyRealApi.departCatTravel(parsed.locationId, creds, authType, extraHeaders);
+                  }
+
+                  if (departRes.ok) {
+                    roundSuccess++;
+                    await new Promise((r) => setTimeout(r, 500));
+                    const afterRes = await workbuddyRealApi.getCatTravelStatus(creds, authType, extraHeaders).catch(() => null);
+                    const afterParsed = afterRes?.ok ? parseCatTravelServerState(afterRes.data) : null;
+                    const finishNow = new Date();
+                    const finishFull = formatFullDateTime(finishNow);
+                    const finishTime = finishNow.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+                    if (afterParsed?.isInTravel) {
+                      catStatusLabel = '旅行中';
+                      const remSec = afterParsed.remainingSeconds;
+                      const nextWaitSec = remSec > 0 ? Math.min(Math.max(remSec + 5, 20), 1800) : 120;
+                      travelFollowupNextCheckRef.current[acc.id] = Date.now() + nextWaitSec * 1000;
+                      setAccounts((prev) =>
+                        prev.map((a) =>
+                          a.id === acc.id
+                            ? {
+                                ...a,
+                                catTravel: {
+                                  ...a.catTravel,
+                                  status: '旅行中',
+                                  statusUpdated: finishTime,
+                                  lastDepartedAt: finishFull,
+                                  remainingSeconds: remSec,
+                                  detailMessage: `猫猫已出发旅行${remSec > 0 ? ` (约 ${remSec}s 后归来自动领奖)` : ''}，归来将自动领奖`,
+                                  lastResult: `自动出发 (${finishFull})`,
+                                },
+                              }
+                            : a
+                        )
+                      );
+                      addLog(
+                        'success',
+                        acc.id,
+                        `${accPrefix} ${tag} 步骤 2/3 · 猫猫已成功自动出发！${
+                          remSec > 0 ? `预计 ${remSec}s 后归来` : ''
+                        }，归来后将自动领取旅行奖励`
+                      );
+                    } else {
+                      const claimAfter = await workbuddyRealApi
+                        .claimCatTravelReward(creds, authType, extraHeaders)
+                        .catch(() => null);
+                      catStatusLabel = '今日已完成';
+                      delete travelFollowupNextCheckRef.current[acc.id];
+                      setAccounts((prev) =>
+                        prev.map((a) =>
+                          a.id === acc.id
+                            ? {
+                                ...a,
+                                catTravel: {
+                                  ...a.catTravel,
+                                  status: '今日已完成',
+                                  statusUpdated: finishTime,
+                                  lastCompletedAt: finishFull,
+                                  lastCompletedDate: todayKey,
+                                  remainingSeconds: 0,
+                                  detailMessage: `定时猫猫旅行完成${claimAfter?.ok ? '并已领奖' : ''} (完成时间: ${finishFull})`,
+                                  lastResult: `自动旅行完成 (${finishFull})`,
+                                },
+                              }
+                            : a
+                        )
+                      );
+                      addLog(
+                        'success',
+                        acc.id,
+                        `${accPrefix} ${tag} 步骤 2/3 · 猫猫自动出发${claimAfter?.ok ? '并已领取旅行奖励' : '完成'}！(完成时间: ${finishFull})`
+                      );
+                    }
+                  } else if (/limit|上限|已完成|daily_limit/i.test(departMsg)) {
+                    catStatusLabel = '今日已完成';
                     setAccounts((prev) =>
                       prev.map((a) =>
                         a.id === acc.id
@@ -1249,127 +1534,338 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                               catTravel: {
                                 ...a.catTravel,
                                 status: '今日已完成',
-                                statusUpdated: finishTime,
-                                lastCompletedAt: finishFull,
+                                statusUpdated: nowTime,
+                                lastCompletedAt: a.catTravel.lastCompletedDate === todayKey && a.catTravel.lastCompletedAt ? a.catTravel.lastCompletedAt : nowFull,
                                 lastCompletedDate: todayKey,
-                                remainingSeconds: 0,
-                                detailMessage: `今日自动猫猫旅行已完成 (完成时间: ${finishFull})`,
-                                lastResult: `自动旅行已完成 (${finishFull})`,
+                                detailMessage: `猫猫今日已完成旅行 (${departMsg})`,
                               },
                             }
                           : a
                       )
                     );
+                    addLog('info', acc.id, `${accPrefix} ${tag} 步骤 2/3 · 服务端提示今日已完成: ${departMsg}`);
+                  } else {
+                    roundFailed++;
                     addLog(
-                      'success',
+                      'warn',
                       acc.id,
-                      `${accPrefix} [自动托管] 今日猫猫旅行已自动完成 (完成时间: ${finishFull}${
-                        pts !== null ? ` · 实时积分: ${pts}` : ''
-                      })`
+                      `${accPrefix} ${tag} 步骤 2/3 · 猫猫出发接口返回 HTTP ${departRes.status}${departMsg ? ` (${departMsg})` : ''}`
                     );
                   }
-                } else {
-                  accountDailyCooldownRef.current[acc.id] = Date.now() + 15 * 60 * 1000;
                 }
-              } else if (t.status === 'in_travel') {
-                const remSec = Number(t.remaining_seconds || 0);
-                accountDailyCooldownRef.current[acc.id] = Date.now() + Math.min(Math.max(remSec + 5, 30), 1800) * 1000;
-                setAccounts((prev) =>
-                  prev.map((a) =>
-                    a.id === acc.id
-                      ? {
-                          ...a,
-                          catTravel: {
-                            ...a.catTravel,
-                            status: '旅行中',
-                            statusUpdated: nowTime,
-                            remainingSeconds: remSec,
-                            detailMessage: `猫猫正在旅行中${remSec > 0 ? ` (约 ${remSec}s 后自动领奖)` : ''}`,
-                          },
-                        }
-                      : a
-                  )
-                );
+              } else {
+                roundFailed++;
+                addLog('warn', acc.id, `${accPrefix} ${tag} 步骤 2/3 · 查询猫猫状态失败 (HTTP ${statusRes.status})`);
               }
-            } else {
-              accountDailyCooldownRef.current[acc.id] = Date.now() + 15 * 60 * 1000;
-            }
-          } catch {
-            accountDailyCooldownRef.current[acc.id] = Date.now() + 15 * 60 * 1000;
-          }
-        }
-
-        if (authExpired) continue;
-
-        // B. Automatic Daily Check-in / Streak
-        if (acc.autoDailyCheckin !== false && acc.dailyCheckin?.lastCheckinDate !== todayKey) {
-          try {
-            const streakRes = await workbuddyRealApi.getDailyStreak(creds, authType, extraHeaders);
-            if (streakRes.status === 401) {
-              setAccounts((prev) => prev.map((a) => (a.id === acc.id ? { ...a, status: '异常' } : a)));
-              addLog('error', acc.id, `${accPrefix} [自动托管] 自动签到返回 401，Cookie 已失效`);
-            } else if (streakRes.ok) {
-              const days = Number(streakRes.data?.data?.streak?.days || streakRes.data?.streak?.days || 1);
-              const now = new Date();
-              const nowFull = formatFullDateTime(now);
-              const pts = await handleFetchLivePoints(acc, false);
-              setAccounts((prev) =>
-                prev.map((a) =>
-                  a.id === acc.id
-                    ? {
-                        ...a,
-                        dailyCheckin: {
-                          lastCheckinDate: todayKey,
-                          lastCheckinAt: nowFull,
-                          streakDays: days,
-                        },
-                      }
-                    : a
-                )
-              );
+            } catch (err: unknown) {
+              roundFailed++;
               addLog(
-                'success',
+                'warn',
                 acc.id,
-                `${accPrefix} [自动托管] 今日自动签到与活跃打卡已完成 (连续活跃 ${days} 天 · 时间: ${nowFull}${
-                  pts !== null ? ` · 实时积分: ${pts}` : ''
-                })`
+                `${accPrefix} ${tag} 步骤 2/3 · 猫猫旅行异常: ${err instanceof Error ? err.message : '网络错误'}`
               );
-            } else {
-              accountDailyCooldownRef.current[acc.id] = Date.now() + 15 * 60 * 1000;
             }
-          } catch {
-            accountDailyCooldownRef.current[acc.id] = Date.now() + 15 * 60 * 1000;
           }
+
+          if (authExpired) continue;
+
+          // -----------------------------------------------------------
+          // 步骤 3/3: 自动领奖与官方实时积分同步
+          // -----------------------------------------------------------
+          addLog('info', acc.id, `${accPrefix} ${tag} 步骤 3/3 · 正在核验并领取成长中心可领奖励与同步积分...`);
+          const claimedTasksCount = await claimPendingGrowthRewardsForAccount(acc, tag);
+          if (claimedTasksCount > 0) {
+            roundSuccess += claimedTasksCount;
+          }
+
+          await new Promise((r) => setTimeout(r, 350));
+          const livePts = await handleFetchLivePoints(acc, false);
+          const displayPts = roundPoints(livePts ?? acc.points);
+
+          addLog(
+            'success',
+            acc.id,
+            `${accPrefix} ${tag} 链路执行完成（签到 → 猫猫旅行[${catStatusLabel}] → 领奖[${claimedTasksCount}项]）· 官方实时积分: ${displayPts}`
+          );
         }
+
+        const doneTime = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        setStats((prev) => ({
+          ...prev,
+          roundSuccess: prev.roundSuccess + roundSuccess,
+          roundFailed: prev.roundFailed + roundFailed,
+          lastRefreshed: doneTime,
+        }));
+        setRunningStatusText(`${tag} 执行完成 (${doneTime})`);
+      } finally {
+        autoDailyRunningRef.current = false;
+        setIsAutoDailyRunning(false);
       }
-    } finally {
-      autoDailyRunningRef.current = false;
+    },
+    [claimPendingGrowthRewardsForAccount]
+  );
+
+  // Follow-up automatic claim when a cat returns from '旅行中'
+  const executeCatTravelFollowupClaim = useCallback(
+    async (acc: WorkBuddyAccount) => {
+      if (!licenseAuthRef.current || isRunningRef.current || autoDailyRunningRef.current) return;
+
+      const accPrefix = `[操作账号: ${formatAccountLabel(acc.id, acc.nickname)}]`;
+      const todayKey = getLocalDateKey();
+      autoDailyRunningRef.current = true;
+      setIsAutoDailyRunning(true);
+      try {
+        const statusRes = await workbuddyRealApi.getCatTravelStatus(
+          acc.credentials,
+          acc.authType,
+          acc.extraHeaders
+        );
+        if (statusRes.status === 401) {
+          delete travelFollowupNextCheckRef.current[acc.id];
+          setAccounts((prev) => prev.map((a) => (a.id === acc.id ? { ...a, status: '异常' } : a)));
+          addLog('error', acc.id, `${accPrefix} [归来领奖] Cookie 已失效 (401)`);
+          return;
+        }
+        if (!statusRes.ok || !statusRes.data) {
+          travelFollowupNextCheckRef.current[acc.id] = Date.now() + 5 * 60 * 1000;
+          return;
+        }
+
+        const parsed = parseCatTravelServerState(statusRes.data);
+        const now = new Date();
+        const nowFull = formatFullDateTime(now);
+        const nowTime = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+
+        if (parsed.isClaimable) {
+          const claimRes = await workbuddyRealApi.claimCatTravelReward(
+            acc.credentials,
+            acc.authType,
+            acc.extraHeaders
+          );
+          if (claimRes.ok) {
+            delete travelFollowupNextCheckRef.current[acc.id];
+            setAccounts((prev) =>
+              prev.map((a) =>
+                a.id === acc.id
+                  ? {
+                      ...a,
+                      catTravel: {
+                        ...a.catTravel,
+                        status: '今日已完成',
+                        statusUpdated: nowTime,
+                        lastCompletedAt: nowFull,
+                        lastCompletedDate: todayKey,
+                        remainingSeconds: 0,
+                        detailMessage: `猫猫旅行归来并已自动领奖 (完成时间: ${nowFull})`,
+                        lastResult: `归来自动领奖 (${nowFull})`,
+                      },
+                    }
+                  : a
+              )
+            );
+            const claimedTasks = await claimPendingGrowthRewardsForAccount(acc, '[归来领奖]');
+            await new Promise((r) => setTimeout(r, 350));
+            const livePts = await handleFetchLivePoints(acc, false);
+            addLog(
+              'success',
+              acc.id,
+              `${accPrefix} [归来领奖] 猫猫旅行归来已自动领取奖励！(完成时间: ${nowFull}${
+                claimedTasks > 0 ? ` · 成长任务领奖 ${claimedTasks} 项` : ''
+              } · 实时积分: ${roundPoints(livePts ?? acc.points)})`
+            );
+            setStats((prev) => ({ ...prev, lastRefreshed: nowTime }));
+          } else {
+            travelFollowupNextCheckRef.current[acc.id] = Date.now() + 3 * 60 * 1000;
+          }
+        } else if (parsed.isInTravel) {
+          const remSec = parsed.remainingSeconds;
+          const nextWaitSec = remSec > 0 ? Math.min(Math.max(remSec + 5, 20), 1800) : 120;
+          travelFollowupNextCheckRef.current[acc.id] = Date.now() + nextWaitSec * 1000;
+          setAccounts((prev) =>
+            prev.map((a) =>
+              a.id === acc.id
+                ? {
+                    ...a,
+                    catTravel: {
+                      ...a.catTravel,
+                      status: '旅行中',
+                      statusUpdated: nowTime,
+                      remainingSeconds: remSec,
+                      detailMessage: `猫猫仍在旅行中${remSec > 0 ? ` (剩余 ${remSec}s)` : ''}，归来将自动领奖`,
+                    },
+                  }
+                : a
+            )
+          );
+        } else if (parsed.isDailyLimitReached) {
+          delete travelFollowupNextCheckRef.current[acc.id];
+          setAccounts((prev) =>
+            prev.map((a) =>
+              a.id === acc.id
+                ? {
+                    ...a,
+                    catTravel: {
+                      ...a.catTravel,
+                      status: '今日已完成',
+                      statusUpdated: nowTime,
+                      lastCompletedAt: nowFull,
+                      lastCompletedDate: todayKey,
+                      remainingSeconds: 0,
+                      detailMessage: `猫猫今日旅行已完成 (记录时间: ${nowFull})`,
+                    },
+                  }
+                : a
+            )
+          );
+          addLog('info', acc.id, `${accPrefix} [归来领奖] 猫猫今日旅行已完成，同步完成时间: ${nowFull}`);
+        } else {
+          delete travelFollowupNextCheckRef.current[acc.id];
+        }
+      } finally {
+        autoDailyRunningRef.current = false;
+        setIsAutoDailyRunning(false);
+      }
+    },
+    [claimPendingGrowthRewardsForAccount]
+  );
+
+  // Unified Scheduler Tick Evaluator (invoked by Electron unthrottled main-process clock & browser interval)
+  const evaluateDailyScheduleTick = useCallback(async () => {
+    const now = new Date();
+    const todayKey = getLocalDateKey(now);
+
+    // 1. Cross-day rollover reset on UI state (preserves lastCompletedAt!)
+    if (todayKey !== lastRolloverDayRef.current) {
+      lastRolloverDayRef.current = todayKey;
+      travelFollowupNextCheckRef.current = {};
+      setAccounts((prev) => prev.map((acc) => normalizeAccountForToday(acc, todayKey)));
+      addLog('info', 'system', `[定时任务] 已跨入新的一天 (${todayKey})，等待 ${autoDailyTimeRef.current} 自动执行签到→猫猫旅行→领奖`);
     }
-  }, []);
+
+    if (!licenseAuthRef.current || !autoDailyEnabledRef.current) return;
+    if (isRunningRef.current || autoDailyRunningRef.current) return;
+
+    const nowSec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+    const targetTimeStr = normalizeScheduleTimeString(autoDailyTimeRef.current, '08:00:00');
+    const targetSec = parseTimeToSeconds(targetTimeStr);
+    const lastRun = lastAutoDailyRunRef.current;
+
+    const alreadyTriggeredSlotToday =
+      Boolean(lastRun && lastRun.date === todayKey && lastRun.triggerTime === targetTimeStr);
+
+    // 2. Main Daily Trigger (fires at/after configured HH:mm:ss once per day+slot)
+    if (nowSec >= targetSec && !alreadyTriggeredSlotToday) {
+      const record = {
+        date: todayKey,
+        triggerTime: targetTimeStr,
+        executedAt: formatFullDateTime(now),
+      };
+      lastAutoDailyRunRef.current = record;
+      setLastAutoDailyRun(record);
+      await executeScheduledDailyPipeline('schedule');
+      return;
+    }
+
+    // 3. Cat Return Follow-up Auto-Claim (for any account currently '旅行中')
+    const nowMs = Date.now();
+    const travelingAcc = accountsRef.current.find((acc) => {
+      if (!acc.credentials || !acc.credentials.trim() || acc.status === '异常') return false;
+      if (acc.catTravel.autoTravel === false) return false;
+      if (acc.catTravel.status !== '旅行中') return false;
+      const nextCheck = travelFollowupNextCheckRef.current[acc.id] || 0;
+      return nowMs >= nextCheck;
+    });
+
+    if (travelingAcc) {
+      await executeCatTravelFollowupClaim(travelingAcc);
+    }
+  }, [executeScheduledDailyPipeline, executeCatTravelFollowupClaim]);
+
+  // Handle user changing scheduled time (e.g. 08:00:00 -> 20:50:00)
+  const handleAutoDailyTimeChange = (rawVal: string) => {
+    if (!ensureLicenseAuthorized('配置自动触发时间')) return;
+    const normalized = normalizeScheduleTimeString(rawVal, '08:00:00');
+    setAutoDailyTime(normalized);
+    autoDailyTimeRef.current = normalized;
+
+    const now = new Date();
+    const todayKey = getLocalDateKey(now);
+    const nowSec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+    const targetSec = parseTimeToSeconds(normalized);
+
+    if (targetSec > nowSec) {
+      // Armed for later today! Clear today's previous run record so this new time WILL fire today
+      if (lastAutoDailyRunRef.current?.date === todayKey) {
+        lastAutoDailyRunRef.current = null;
+        setLastAutoDailyRun(null);
+      }
+      addLog(
+        'info',
+        currentAccount?.id || 'system',
+        `[定时配置] 已设置每日自动触发时间为 ${normalized}，将在今日 ${normalized} 自动触发（签到 → 猫猫旅行 → 领奖）`
+      );
+    } else {
+      // Configured time is already earlier than current time today
+      const alreadyDoneToday = lastAutoDailyRunRef.current?.date === todayKey;
+      if (alreadyDoneToday) {
+        const updatedRecord = {
+          date: todayKey,
+          triggerTime: normalized,
+          executedAt: lastAutoDailyRunRef.current?.executedAt || formatFullDateTime(now),
+        };
+        lastAutoDailyRunRef.current = updatedRecord;
+        setLastAutoDailyRun(updatedRecord);
+        addLog(
+          'info',
+          currentAccount?.id || 'system',
+          `[定时配置] 已设置每日自动触发时间为 ${normalized}（今日已执行过，将于明日 ${normalized} 自动触发；如需现在运行可点「立即测试」）`
+        );
+      } else {
+        addLog(
+          'info',
+          currentAccount?.id || 'system',
+          `[定时配置] 已设置每日自动触发时间为 ${normalized}（今日已过设定时间且尚未执行，即将自动补跑一次）`
+        );
+      }
+    }
+  };
 
   useEffect(() => {
     if (!licenseState.isAuthorized) return;
+
     const startupTimer = window.setTimeout(() => {
-      runDailyAutoHostCycle('startup');
-    }, 2500);
+      evaluateDailyScheduleTick();
+    }, 1500);
+
+    // Subscribe to Electron unthrottled main-process 2s clock (works reliably in tray!)
+    let unsubMainTick: (() => void) | undefined;
+    if (electronWindowApi?.onSchedulerTick) {
+      unsubMainTick = electronWindowApi.onSchedulerTick(() => {
+        evaluateDailyScheduleTick();
+      });
+    }
+
+    // Renderer 2s fallback clock (used in web mode & backup in desktop mode)
     const intervalTimer = window.setInterval(() => {
-      const nowKey = getLocalDateKey();
-      const trigger = nowKey !== lastRolloverDayRef.current ? 'midnight' : 'interval';
-      runDailyAutoHostCycle(trigger);
-    }, 60 * 1000);
-    const handleFocus = () => {
-      runDailyAutoHostCycle('focus');
+      evaluateDailyScheduleTick();
+    }, 2000);
+
+    const handleWake = () => {
+      evaluateDailyScheduleTick();
     };
-    window.addEventListener('focus', handleFocus);
-    window.addEventListener('online', handleFocus);
+    window.addEventListener('focus', handleWake);
+    window.addEventListener('online', handleWake);
+    document.addEventListener('visibilitychange', handleWake);
 
     return () => {
       window.clearTimeout(startupTimer);
+      unsubMainTick?.();
       window.clearInterval(intervalTimer);
-      window.removeEventListener('focus', handleFocus);
-      window.removeEventListener('online', handleFocus);
+      window.removeEventListener('focus', handleWake);
+      window.removeEventListener('online', handleWake);
+      document.removeEventListener('visibilitychange', handleWake);
     };
-  }, [licenseState.isAuthorized, autoDailyEnabled, runDailyAutoHostCycle]);
+  }, [licenseState.isAuthorized, autoDailyEnabled, electronWindowApi, evaluateDailyScheduleTick]);
 
   // Complete & Claim Tasks (prioritize claiming already-completed tasks first, then run remaining pending tasks)
   const handleClaimCompletedTasks = async () => {
@@ -2003,8 +2499,8 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                 </div>
               </div>
 
-              {/* Feature Card 1: 猫猫旅行 & 每日自动托管 (Cat Travel & Daily Auto Host) */}
-              <div className="shrink-0 px-3.5 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl space-y-1.5">
+              {/* Feature Card 1: 猫猫旅行 & 每日定时托管 (Cat Travel & Daily Scheduled Pipeline) */}
+              <div className="shrink-0 px-3.5 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl space-y-2">
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm">🐱</span>
@@ -2034,32 +2530,11 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (!ensureLicenseAuthorized('切换每日自动旅行与签到')) return;
-                        setAutoDailyEnabled((v) => !v);
-                      }}
-                      disabled={!licenseState.isAuthorized}
-                      title={
-                        !licenseState.isAuthorized
-                          ? '请先完成 License 授权校验'
-                          : '每天 0 点后或启动时自动完成所有有效账号的猫猫旅行与每日签到'
-                      }
-                      className={`px-2.5 py-1 rounded text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer border disabled:opacity-40 disabled:cursor-not-allowed ${
-                        autoDailyEnabled
-                          ? 'bg-indigo-600/25 hover:bg-indigo-600/35 text-indigo-300 border-indigo-500/40'
-                          : 'bg-slate-800 hover:bg-slate-700 text-slate-400 border-slate-700'
-                      }`}
-                    >
-                      {!licenseState.isAuthorized && <Lock className="w-3 h-3 text-amber-400" />}
-                      <span>{autoDailyEnabled ? '☑ 每日自动旅行+签到' : '☐ 每日自动旅行+签到'}</span>
-                    </button>
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <button
                       onClick={toggleCatAutoTravel}
                       disabled={!licenseState.isAuthorized}
-                      title={!licenseState.isAuthorized ? '请先完成 License 授权校验' : undefined}
+                      title={!licenseState.isAuthorized ? '请先完成 License 授权校验' : '控制当前账号是否参与每日自动猫猫旅行'}
                       className={`px-2.5 py-1 rounded text-[11px] font-medium flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                         currentAccount.catTravel.autoTravel
                           ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
@@ -2071,7 +2546,7 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                     </button>
                     <button
                       onClick={handleRefreshCatTravelStatus}
-                      disabled={isRunning || !licenseState.isAuthorized}
+                      disabled={isRunning || isAutoDailyRunning || !licenseState.isAuthorized}
                       title={!licenseState.isAuthorized ? '请先完成 License 授权校验' : undefined}
                       className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] rounded border border-slate-700 transition-colors cursor-pointer flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
                     >
@@ -2081,6 +2556,89 @@ export const WorkBuddyWorkspace: React.FC<WorkBuddyWorkspaceProps> = () => {
                         <RefreshCw className="w-3 h-3 text-slate-400" />
                       )}
                       <span>刷新状态</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Configurable Daily Schedule Strip: HH:mm:ss -> 签到 → 猫猫旅行 → 领奖 */}
+                <div className="px-2.5 py-1.5 bg-slate-900/70 border border-slate-800/80 rounded-lg flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!ensureLicenseAuthorized('切换每日定时自动执行')) return;
+                        setAutoDailyEnabled((v) => {
+                          const next = !v;
+                          addLog(
+                            'info',
+                            currentAccount?.id || 'system',
+                            `[定时配置] 已${next ? '开启' : '关闭'}每日定时自动托管（触发时间 ${autoDailyTime}：签到 → 猫猫旅行 → 领奖）`
+                          );
+                          return next;
+                        });
+                      }}
+                      disabled={!licenseState.isAuthorized}
+                      title={
+                        !licenseState.isAuthorized
+                          ? '请先完成 License 授权校验'
+                          : '每天到达设定时间自动执行：签到 → 猫猫旅行 → 领奖，并同步输出日志'
+                      }
+                      className={`px-2 py-0.5 rounded font-medium flex items-center gap-1 transition-colors cursor-pointer border disabled:opacity-40 disabled:cursor-not-allowed ${
+                        autoDailyEnabled
+                          ? 'bg-indigo-600/25 hover:bg-indigo-600/35 text-indigo-300 border-indigo-500/40'
+                          : 'bg-slate-800 hover:bg-slate-700 text-slate-400 border-slate-700'
+                      }`}
+                    >
+                      {!licenseState.isAuthorized && <Lock className="w-3 h-3 text-amber-400" />}
+                      <span>{autoDailyEnabled ? '☑ 每日定时' : '☐ 每日定时'}</span>
+                    </button>
+
+                    <label className="inline-flex items-center gap-1.5 text-slate-300">
+                      <Clock className="w-3 h-3 text-indigo-400 shrink-0" />
+                      <span className="text-slate-400">触发时间</span>
+                      <input
+                        type="time"
+                        step="1"
+                        value={autoDailyTime}
+                        disabled={!licenseState.isAuthorized}
+                        onChange={(e) => handleAutoDailyTimeChange(e.target.value)}
+                        title="设置每天自动执行时间（精确到秒，如 08:00:00）"
+                        className="bg-slate-950 border border-slate-700 focus:border-indigo-400 rounded px-1.5 py-0.5 text-[11px] font-mono text-emerald-300 outline-none disabled:opacity-40 disabled:cursor-not-allowed [color-scheme:dark]"
+                      />
+                    </label>
+
+                    <span className="text-slate-400 hidden sm:inline">
+                      自动链路：<span className="text-slate-200">签到 → 猫猫旅行 → 领奖</span>
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="font-mono text-[10px] text-slate-400">
+                      {isAutoDailyRunning
+                        ? '定时链路执行中...'
+                        : !autoDailyEnabled
+                        ? '定时已关闭'
+                        : lastAutoDailyRun?.date === getLocalDateKey() && lastAutoDailyRun?.triggerTime === autoDailyTime
+                        ? `今日 ${autoDailyTime} 已触发`
+                        : `等待 ${autoDailyTime} 自动触发`}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={isRunning || isAutoDailyRunning || !licenseState.isAuthorized}
+                      onClick={() => {
+                        if (!ensureLicenseAuthorized('立即执行定时链路')) return;
+                        setIsLogOpen(true);
+                        executeScheduledDailyPipeline('manual');
+                      }}
+                      title="立即按定时链路（签到 → 猫猫旅行 → 领奖）运行一次并在底部控制台查看实时输出"
+                      className="px-2 py-0.5 bg-emerald-600/20 hover:bg-emerald-600/35 text-emerald-300 border border-emerald-500/35 rounded text-[10px] font-medium flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      {isAutoDailyRunning ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Play className="w-2.5 h-2.5 fill-current" />
+                      )}
+                      <span>立即测试</span>
                     </button>
                   </div>
                 </div>

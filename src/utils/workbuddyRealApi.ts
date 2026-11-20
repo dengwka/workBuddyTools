@@ -90,6 +90,157 @@ export function formatFullDateTime(date = new Date()): string {
   return `${y}-${mo}-${d} ${h}:${mi}:${s}`;
 }
 
+export function normalizeScheduleTimeString(raw: string, fallback = '08:00:00'): string {
+  const trimmed = String(raw || '').trim();
+  const match = trimmed.match(/^(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?$/);
+  if (!match) return fallback;
+  const h = Math.min(23, Math.max(0, parseInt(match[1], 10)));
+  const m = Math.min(59, Math.max(0, parseInt(match[2], 10)));
+  const s = Math.min(59, Math.max(0, parseInt(match[3] ?? '0', 10)));
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+export function parseTimeToSeconds(hhmmss: string): number {
+  const normalized = normalizeScheduleTimeString(hhmmss);
+  const [h, m, s] = normalized.split(':').map((n) => parseInt(n, 10) || 0);
+  return h * 3600 + m * 60 + s;
+}
+
+export interface ParsedCatTravelState {
+  rawStatus: string;
+  isClaimable: boolean;
+  isDailyLimitReached: boolean;
+  isInTravel: boolean;
+  canDepart: boolean;
+  remainingSeconds: number;
+  locationId: string | number;
+  destination: string;
+  rawObject: any;
+}
+
+export function parseCatTravelServerState(rawResponseData: any): ParsedCatTravelState {
+  const outer = rawResponseData?.data || rawResponseData || {};
+  const t =
+    outer && typeof outer.travel === 'object' && outer.travel !== null
+      ? { ...outer, ...outer.travel }
+      : outer;
+
+  const rawStatus = String(t?.status ?? t?.travel_status ?? t?.state ?? '')
+    .toLowerCase()
+    .trim();
+
+  // Compute remaining seconds from explicit countdown OR end/arrive timestamp
+  let remainingSeconds = Number(
+    t?.remaining_seconds ?? t?.remain_seconds ?? t?.left_seconds ?? t?.countdown ?? 0
+  );
+  if (!Number.isFinite(remainingSeconds) || remainingSeconds < 0) remainingSeconds = 0;
+
+  if (remainingSeconds === 0) {
+    const endRaw = t?.end_time ?? t?.arrive_time ?? t?.finish_time ?? t?.expected_end_time ?? t?.return_time;
+    if (endRaw !== undefined && endRaw !== null && endRaw !== '') {
+      let endMs = Number(endRaw);
+      if (Number.isFinite(endMs) && endMs > 0) {
+        if (endMs < 1e12) endMs *= 1000;
+      } else {
+        endMs = Date.parse(String(endRaw));
+      }
+      if (Number.isFinite(endMs) && endMs > Date.now()) {
+        remainingSeconds = Math.ceil((endMs - Date.now()) / 1000);
+      }
+    }
+  }
+
+  const todayCount = Number(t?.today_count ?? t?.daily_count ?? t?.used_count ?? 0);
+  const dailyLimit = Number(t?.daily_limit ?? t?.max_daily_count ?? 0);
+  const reachedByCount =
+    Number.isFinite(todayCount) &&
+    Number.isFinite(dailyLimit) &&
+    dailyLimit > 0 &&
+    todayCount >= dailyLimit;
+
+  const isClaimable = Boolean(
+    t?.can_claim ||
+      t?.claimable ||
+      t?.has_unclaimed_reward ||
+      t?.unclaimed ||
+      rawStatus === 'completed' ||
+      rawStatus === 'finished' ||
+      rawStatus === 'arrived' ||
+      rawStatus === 'reward_pending' ||
+      rawStatus === 'claimable' ||
+      rawStatus === 'to_claim' ||
+      rawStatus === 'wait_claim' ||
+      (rawStatus === 'in_travel' &&
+        remainingSeconds <= 0 &&
+        (t?.remaining_seconds !== undefined || t?.remain_seconds !== undefined))
+  );
+
+  const isDailyLimitReached =
+    !isClaimable &&
+    Boolean(
+      t?.daily_limit_reached ||
+        t?.is_daily_limit_reached ||
+        t?.today_completed ||
+        rawStatus === 'daily_limit_reached' ||
+        rawStatus === 'limit_reached' ||
+        rawStatus === 'claimed' ||
+        rawStatus === 'done' ||
+        reachedByCount
+    );
+
+  const isInTravel =
+    !isClaimable &&
+    !isDailyLimitReached &&
+    Boolean(
+      rawStatus === 'in_travel' ||
+        rawStatus === 'traveling' ||
+        rawStatus === 'travelling' ||
+        rawStatus === 'ongoing' ||
+        rawStatus === 'running' ||
+        remainingSeconds > 0
+    );
+
+  // Any non-claimable, non-daily-limit, non-traveling state should attempt departure (prevents silent fallthrough)
+  const canDepart = !isClaimable && !isDailyLimitReached && !isInTravel;
+
+  const locationsArr = Array.isArray(t?.locations)
+    ? t.locations
+    : Array.isArray(t?.available_locations)
+    ? t.available_locations
+    : Array.isArray(t?.destinations)
+    ? t.destinations
+    : [];
+  const firstUnlockedLoc =
+    locationsArr.find((loc: any) => loc && loc.locked !== true && loc.unlocked !== false) ||
+    locationsArr[0];
+  const locationId =
+    t?.next_location_id ??
+    t?.default_location_id ??
+    firstUnlockedLoc?.id ??
+    firstUnlockedLoc?.location_id ??
+    t?.location_id ??
+    1;
+  const destination = String(
+    t?.destination_name ??
+      t?.location_name ??
+      t?.destination ??
+      firstUnlockedLoc?.name ??
+      ''
+  );
+
+  return {
+    rawStatus,
+    isClaimable,
+    isDailyLimitReached,
+    isInTravel,
+    canDepart,
+    remainingSeconds,
+    locationId,
+    destination,
+    rawObject: t,
+  };
+}
+
 export function formatAccountLabel(accountId: string, nickname?: string): string {
   const cleanId = String(accountId || '').trim();
   const shortId = cleanId.length > 12 ? cleanId.slice(0, 8) : cleanId;
